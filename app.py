@@ -1,26 +1,16 @@
+#!/usr/bin/env python3
 from flask import Flask, jsonify, request
 import json, os, hashlib, time
 from ecdsa import VerifyingKey, SECP256k1, BadSignatureError
 
 app = Flask(__name__)
 
-STATE_FILE = "state.json"      # balances (NO SE TOCA ESTRUCTURA)
-LEDGER_FILE = "ledger.json"    # mempool (tx pendientes)
-BLOCKS_FILE = "blocks.json"    # blockchain real
-
-BLOCK_TX_LIMIT = 5  # cuántas tx forman un bloque
-
-# -----------------------
-# Utils básicos
-# -----------------------
-
-def sha256(msg: str) -> str:
-    return hashlib.sha256(msg.encode()).hexdigest()
+# Archivos de persistencia
+STATE_FILE = "state.json"
+LEDGER_FILE = "ledger.json"
+BLOCKS_FILE = "blocks.json"
 
 # -----------------------
-# State (balances)
-# -----------------------
-
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
@@ -30,10 +20,6 @@ def load_state():
 def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
-
-# -----------------------
-# Ledger (mempool)
-# -----------------------
 
 def load_ledger():
     if os.path.exists(LEDGER_FILE):
@@ -45,10 +31,6 @@ def save_ledger(ledger):
     with open(LEDGER_FILE, "w") as f:
         json.dump(ledger, f, indent=2)
 
-# -----------------------
-# Blockchain
-# -----------------------
-
 def load_blocks():
     if os.path.exists(BLOCKS_FILE):
         with open(BLOCKS_FILE, "r") as f:
@@ -59,111 +41,38 @@ def save_blocks(blocks):
     with open(BLOCKS_FILE, "w") as f:
         json.dump(blocks, f, indent=2)
 
-def get_last_block():
-    blocks = load_blocks()
-    return blocks[-1] if blocks else None
+def sha256(msg: str) -> str:
+    return hashlib.sha256(msg.encode()).hexdigest()
 
-def hash_block(block):
-    block_copy = dict(block)
-    block_copy.pop("hash", None)
-    block_string = json.dumps(block_copy, sort_keys=True)
-    return sha256(block_string)
-
-def create_genesis_block_if_needed():
-    blocks = load_blocks()
-    if blocks:
-        return
-
-    genesis = {
-        "index": 1,
+# -----------------------
+# Inicializar bloque génesis si no existe
+if not os.path.exists(BLOCKS_FILE):
+    genesis_block = {
+        "index": 0,
         "timestamp": time.time(),
         "transactions": [],
-        "previous_hash": "0" * 64,
-        "nonce": 0
+        "previous_hash": "0"*64,
+        "block_hash": "0"*64
     }
-    genesis["hash"] = hash_block(genesis)
-    save_blocks([genesis])
-
-def create_block_from_mempool():
-    ledger = load_ledger()
-    if len(ledger) < BLOCK_TX_LIMIT:
-        return None
-
-    blocks = load_blocks()
-    last_block = blocks[-1]
-
-    txs = ledger[:BLOCK_TX_LIMIT]
-    remaining = ledger[BLOCK_TX_LIMIT:]
-
-    block = {
-        "index": last_block["index"] + 1,
-        "timestamp": time.time(),
-        "transactions": txs,
-        "previous_hash": last_block["hash"],
-        "nonce": 0
-    }
-
-    block["hash"] = hash_block(block)
-
-    blocks.append(block)
-    save_blocks(blocks)
-    save_ledger(remaining)
-
-    return block
+    save_blocks([genesis_block])
 
 # -----------------------
-# Arranque
-# -----------------------
-
-create_genesis_block_if_needed()
-
-# -----------------------
-# API básica
-# -----------------------
-
 @app.route("/")
 def home():
-    return jsonify({
-        "status": "VelCoin node online",
-        "network": "velcoin-mainnet",
-        "blocks": len(load_blocks())
-    })
-
-# -----------------------
-# Balance REAL desde blockchain
-# -----------------------
+    return jsonify({"status": "VelCoin node online", "network": "velcoin-mainnet"})
 
 @app.route("/balance/<address>")
 def balance(address):
-    balance = 0
-    blocks = load_blocks()
-
-    for block in blocks:
-        for tx in block["transactions"]:
-            if tx["to"] == address:
-                balance += tx["amount"]
-            if tx["from"] == address:
-                balance -= tx["amount"]
-
-    # fallback al state (para no romper wallet fundadora existente)
-    if balance == 0:
-        state = load_state()
-        balance = state.get(address, 0)
-
+    state = load_state()
     return jsonify({
         "address": address,
-        "balance": balance,
+        "balance": state.get(address, 0),
         "symbol": "VLC"
     })
-
-# -----------------------
-# Transferencia firmada
-# -----------------------
 
 @app.route("/transfer", methods=["POST"])
 def transfer():
     data = request.get_json()
-
     sender = data.get("from")
     recipient = data.get("to")
     amount = data.get("amount")
@@ -173,100 +82,89 @@ def transfer():
     if not all([sender, recipient, amount, signature, public_key]):
         return jsonify({"error": "missing fields"}), 400
 
-    amount = int(amount)
-
     state = load_state()
-
     if state.get(sender, 0) < amount:
         return jsonify({"error": "insufficient balance"}), 400
 
-    message = f"{sender}->{recipient}:{amount}"
-    msg_hash = sha256(message)
+    # Calcular hash de transacción
+    timestamp = time.time()
+    message = f"{sender}->{recipient}:{amount}:{timestamp}"
+    tx_hash = sha256(message)
 
+    # Verificación ECDSA
     try:
         vk = VerifyingKey.from_string(bytes.fromhex(public_key), curve=SECP256k1)
-        vk.verify(bytes.fromhex(signature), bytes.fromhex(msg_hash))
+        vk.verify(bytes.fromhex(signature), bytes.fromhex(sha256(f"{sender}->{recipient}:{amount}")))
     except BadSignatureError:
         return jsonify({"error": "invalid signature"}), 400
     except Exception as e:
         return jsonify({"error": "verification failed", "details": str(e)}), 500
 
-    # actualizar balances (NO cambia estructura fundadora)
+    # Aplicar transferencia
     state[sender] -= amount
     state[recipient] = state.get(recipient, 0) + amount
     save_state(state)
 
-    # crear tx
+    # Guardar en ledger
+    ledger = load_ledger()
     tx = {
-        "tx_hash": msg_hash,
+        "tx_hash": tx_hash,
         "from": sender,
         "to": recipient,
         "amount": amount,
-        "timestamp": time.time()
+        "timestamp": timestamp
     }
-
-    ledger = load_ledger()
     ledger.append(tx)
     save_ledger(ledger)
 
-    # intentar minar bloque automáticamente
-    new_block = create_block_from_mempool()
+    # -----------------------
+    # Agrupar en bloque simple
+    blocks = load_blocks()
+    last_block = blocks[-1]
+    block_index = last_block["index"] + 1
+    previous_hash = last_block["block_hash"]
+    new_block = {
+        "index": block_index,
+        "timestamp": timestamp,
+        "transactions": [tx],
+        "previous_hash": previous_hash,
+        "block_hash": sha256(f"{block_index}{timestamp}{previous_hash}{tx_hash}")
+    }
+    blocks.append(new_block)
+    save_blocks(blocks)
 
     return jsonify({
         "status": "success",
-        "tx_hash": msg_hash,
-        "included_in_block": new_block["index"] if new_block else None
+        "from": sender,
+        "to": recipient,
+        "amount": amount,
+        "tx_hash": tx_hash,
+        "block_index": block_index
     })
 
 # -----------------------
-# Explorer endpoints (CoinMarketCap style)
-# -----------------------
-
+# Consultas tipo blockchain
 @app.route("/blocks")
-def blocks():
-    return jsonify(load_blocks())
-
-@app.route("/blocks/<int:index>")
-def block_by_index(index):
-    for b in load_blocks():
-        if b["index"] == index:
-            return jsonify(b)
-    return jsonify({"error": "block not found"}), 404
+def get_blocks():
+    blocks = load_blocks()
+    return jsonify(blocks)
 
 @app.route("/tx/<tx_hash>")
-def tx_by_hash(tx_hash):
-    for block in load_blocks():
-        for tx in block["transactions"]:
-            if tx["tx_hash"] == tx_hash:
-                return jsonify(tx)
-    return jsonify({"error": "transaction not found"}), 404
+def get_transaction(tx_hash):
+    ledger = load_ledger()
+    for tx in ledger:
+        if tx["tx_hash"] == tx_hash:
+            return jsonify(tx)
+    return jsonify({"error": "tx not found"}), 404
 
 @app.route("/address/<address>/txs")
-def txs_by_address(address):
-    result = []
-    for block in load_blocks():
-        for tx in block["transactions"]:
-            if tx["from"] == address or tx["to"] == address:
-                result.append(tx)
-    return jsonify(result)
+def get_address_txs(address):
+    ledger = load_ledger()
+    txs = [tx for tx in ledger if tx["from"] == address or tx["to"] == address]
+    return jsonify(txs)
 
 # -----------------------
-# Estado de red
-# -----------------------
-
-@app.route("/network/stats")
-def net_stats():
-    blocks = load_blocks()
-    tx_count = sum(len(b["transactions"]) for b in blocks)
-
-    return jsonify({
-        "blocks": len(blocks),
-        "transactions": tx_count,
-        "mempool": len(load_ledger())
-    })
-
-# -----------------------
-
 if __name__ == "__main__":
+    import os
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
