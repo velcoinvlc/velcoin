@@ -6,6 +6,7 @@ app = Flask(__name__)
 STATE_FILE = "state.json"
 LEDGER_FILE = "ledger.json"
 BLOCKCHAIN_FILE = "blockchain.json"
+POOL_FILE = "pool.json"
 
 # -----------------------
 def load_state():
@@ -90,6 +91,27 @@ def add_block(transactions):
     return block
 
 # -----------------------
+# Pool functions
+def load_pool():
+    if os.path.exists(POOL_FILE):
+        with open(POOL_FILE, "r") as f:
+            return json.load(f)
+    # Pool inicial: 200 USDT y 10,000 VelCoin
+    pool = {"velcoin": 10000, "usdt": 200, "history": []}
+    save_pool(pool)
+    return pool
+
+def save_pool(pool):
+    with open(POOL_FILE, "w") as f:
+        json.dump(pool, f, indent=2)
+
+def pool_price(pool):
+    if pool["velcoin"] == 0:
+        return 0
+    return pool["usdt"] / pool["velcoin"]
+
+# -----------------------
+# Node endpoints
 @app.route("/")
 def home():
     return jsonify({"status": "VelCoin node online", "network": "velcoin-mainnet"})
@@ -140,11 +162,9 @@ def transfer():
     if state.get(sender, 0) < amount:
         return jsonify({"error": "insufficient balance"}), 400
 
-    # mensaje y hash de transacción
     message = f"{sender}->{recipient}:{amount}"
     msg_hash = sha256(message)
 
-    # verificar firma ECDSA
     try:
         vk = VerifyingKey.from_string(bytes.fromhex(public_key), curve=SECP256k1)
         vk.verify(bytes.fromhex(signature), bytes.fromhex(msg_hash))
@@ -153,12 +173,10 @@ def transfer():
     except Exception as e:
         return jsonify({"error": "verification failed", "details": str(e)}), 500
 
-    # aplicar transferencia
     state[sender] -= amount
     state[recipient] = state.get(recipient, 0) + amount
     save_state(state)
 
-    # guardar en ledger
     ledger = load_ledger()
     tx = {
         "tx_hash": msg_hash,
@@ -170,7 +188,6 @@ def transfer():
     ledger.append(tx)
     save_ledger(ledger)
 
-    # agregar a un bloque
     add_block([tx])
 
     return jsonify({
@@ -181,29 +198,8 @@ def transfer():
         "tx_hash": msg_hash
     })
 
-# =========================
-# VelCoin Liquidity Pool (modulo extra no invasivo)
-# =========================
-
-POOL_FILE = "pool.json"
-
-def load_pool():
-    if os.path.exists(POOL_FILE):
-        with open(POOL_FILE, "r") as f:
-            return json.load(f)
-    return {"velcoin": 0, "usdt": 0, "history": []}
-
-def save_pool(pool):
-    with open(POOL_FILE, "w") as f:
-        json.dump(pool, f, indent=2)
-
-def pool_price(pool):
-    if pool["velcoin"] == 0:
-        return 0
-    return pool["usdt"] / pool["velcoin"]
-
 # -----------------------
-# Endpoints del pool
+# Pool endpoints
 @app.route("/pool")
 def pool_info():
     pool = load_pool()
@@ -234,16 +230,13 @@ def buy_velcoin():
     if velcoin_out > pool["velcoin"]:
         return jsonify({"error": "not enough liquidity"}), 400
 
-    # actualizar pool
     pool["usdt"] += usdt_amount
     pool["velcoin"] -= velcoin_out
     save_pool(pool)
 
-    # acreditar usuario
     state[address] = state.get(address, 0) + velcoin_out
     save_state(state)
 
-    # registrar tx
     tx_hash = sha256(f"BUY:{address}:{velcoin_out}:{time.time()}")
     add_tx_to_block({
         "tx_hash": tx_hash,
@@ -281,16 +274,13 @@ def sell_velcoin():
     if usdt_out > pool["usdt"]:
         return jsonify({"error": "not enough USDT in pool"}), 400
 
-    # actualizar pool
     pool["usdt"] -= usdt_out
     pool["velcoin"] += velcoin_amount
     save_pool(pool)
 
-    # debitar usuario
     state[address] -= velcoin_amount
     save_state(state)
 
-    # registrar tx
     tx_hash = sha256(f"SELL:{address}:{velcoin_amount}:{time.time()}")
     add_tx_to_block({
         "tx_hash": tx_hash,
