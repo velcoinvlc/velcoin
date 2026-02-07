@@ -1,4 +1,5 @@
 {
-  "reserva_velcoin": 10000.0,
-  "reserva_usdt": 200.0
+  "velcoin": 1000,
+  "usdt": 5000,
+  "history": []
 }
