@@ -9,6 +9,7 @@ BLOCKCHAIN_FILE = "blockchain.json"
 POOL_FILE = "pool.json"
 
 # -----------------------
+# STATE FUNCTIONS
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
@@ -19,6 +20,8 @@ def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
 
+# -----------------------
+# LEDGER FUNCTIONS
 def load_ledger():
     if os.path.exists(LEDGER_FILE):
         with open(LEDGER_FILE, "r") as f:
@@ -29,10 +32,11 @@ def save_ledger(ledger):
     with open(LEDGER_FILE, "w") as f:
         json.dump(ledger, f, indent=2)
 
+# -----------------------
+# BLOCKCHAIN FUNCTIONS
 def load_blockchain():
     if os.path.exists(BLOCKCHAIN_FILE):
-        with open(BLOCKCHAIN_FILE, "r") as f:
-            return json.load(f)
+        return json.load(open(BLOCKCHAIN_FILE, "r"))
     return []
 
 def save_blockchain(chain):
@@ -53,13 +57,10 @@ def add_tx_to_block(tx):
         "transactions": [tx]
     }
 
-    raw = json.dumps(block, sort_keys=True)
-    block["block_hash"] = sha256(raw)
-
+    block["block_hash"] = sha256(json.dumps(block, sort_keys=True))
     chain.append(block)
     save_blockchain(chain)
 
-# -----------------------
 def create_genesis_block():
     chain = load_blockchain()
     if not chain:
@@ -75,31 +76,12 @@ def create_genesis_block():
         save_blockchain(chain)
     return chain
 
-def add_block(transactions):
-    chain = load_blockchain()
-    previous_block = chain[-1]
-    block = {
-        "index": previous_block["index"] + 1,
-        "timestamp": int(time.time()),
-        "transactions": transactions,
-        "previous_hash": previous_block["block_hash"],
-        "block_hash": ""
-    }
-    block["block_hash"] = sha256(json.dumps(block, sort_keys=True))
-    chain.append(block)
-    save_blockchain(chain)
-    return block
-
 # -----------------------
-# Pool functions
+# POOL FUNCTIONS
 def load_pool():
     if os.path.exists(POOL_FILE):
-        with open(POOL_FILE, "r") as f:
-            return json.load(f)
-    # Pool inicial: 200 USDT y 10,000 VelCoin
-    pool = {"velcoin": 10000, "usdt": 200, "history": []}
-    save_pool(pool)
-    return pool
+        return json.load(open(POOL_FILE, "r"))
+    return {"velcoin": 0, "usdt": 0, "history": []}
 
 def save_pool(pool):
     with open(POOL_FILE, "w") as f:
@@ -111,7 +93,8 @@ def pool_price(pool):
     return pool["usdt"] / pool["velcoin"]
 
 # -----------------------
-# Node endpoints
+# API ENDPOINTS
+
 @app.route("/")
 def home():
     return jsonify({"status": "VelCoin node online", "network": "velcoin-mainnet"})
@@ -119,16 +102,11 @@ def home():
 @app.route("/balance/<address>")
 def balance(address):
     state = load_state()
-    return jsonify({
-        "address": address,
-        "balance": state.get(address, 0),
-        "symbol": "VLC"
-    })
+    return jsonify({"address": address, "balance": state.get(address, 0), "symbol": "VLC"})
 
 @app.route("/blocks")
 def get_blocks():
-    chain = load_blockchain()
-    return jsonify(chain)
+    return jsonify(load_blockchain())
 
 @app.route("/tx/<tx_hash>")
 def get_transaction(tx_hash):
@@ -147,7 +125,6 @@ def get_address_txs(address):
 @app.route("/transfer", methods=["POST"])
 def transfer():
     data = request.get_json()
-
     sender = data.get("from")
     recipient = data.get("to")
     amount = data.get("amount")
@@ -158,7 +135,6 @@ def transfer():
         return jsonify({"error": "missing fields"}), 400
 
     state = load_state()
-
     if state.get(sender, 0) < amount:
         return jsonify({"error": "insufficient balance"}), 400
 
@@ -178,30 +154,18 @@ def transfer():
     save_state(state)
 
     ledger = load_ledger()
-    tx = {
-        "tx_hash": msg_hash,
-        "from": sender,
-        "to": recipient,
-        "amount": amount,
-        "timestamp": int(time.time())
-    }
+    tx = {"tx_hash": msg_hash, "from": sender, "to": recipient, "amount": amount, "timestamp": int(time.time())}
     ledger.append(tx)
     save_ledger(ledger)
 
     add_block([tx])
-
-    return jsonify({
-        "status": "success",
-        "from": sender,
-        "to": recipient,
-        "amount": amount,
-        "tx_hash": msg_hash
-    })
+    return jsonify({"status": "success", "from": sender, "to": recipient, "amount": amount, "tx_hash": msg_hash})
 
 # -----------------------
-# Pool endpoints
+# POOL ENDPOINTS
+
 @app.route("/pool")
-def pool_info():
+def get_pool():
     pool = load_pool()
     return jsonify({
         "velcoin_reserve": pool["velcoin"],
@@ -214,19 +178,16 @@ def buy_velcoin():
     data = request.get_json()
     address = data.get("address")
     usdt_amount = float(data.get("usdt", 0))
-
     if not address or usdt_amount <= 0:
         return jsonify({"error": "bad params"}), 400
 
     pool = load_pool()
     state = load_state()
     price = pool_price(pool)
-
     if price == 0:
         return jsonify({"error": "pool empty"}), 400
 
     velcoin_out = usdt_amount / price
-
     if velcoin_out > pool["velcoin"]:
         return jsonify({"error": "not enough liquidity"}), 400
 
@@ -238,39 +199,25 @@ def buy_velcoin():
     save_state(state)
 
     tx_hash = sha256(f"BUY:{address}:{velcoin_out}:{time.time()}")
-    add_tx_to_block({
-        "tx_hash": tx_hash,
-        "from": "POOL",
-        "to": address,
-        "amount": velcoin_out,
-        "type": "buy"
-    })
+    add_tx_to_block({"tx_hash": tx_hash, "from": "POOL", "to": address, "amount": velcoin_out, "type": "buy"})
 
-    return jsonify({
-        "status": "success",
-        "vlc_received": velcoin_out,
-        "price": price,
-        "tx_hash": tx_hash
-    })
+    return jsonify({"status": "success", "vlc_received": velcoin_out, "price": price, "tx_hash": tx_hash})
 
 @app.route("/sell", methods=["POST"])
 def sell_velcoin():
     data = request.get_json()
     address = data.get("address")
     velcoin_amount = float(data.get("vlc", 0))
-
     if not address or velcoin_amount <= 0:
         return jsonify({"error": "bad params"}), 400
 
     pool = load_pool()
     state = load_state()
-
     if state.get(address, 0) < velcoin_amount:
         return jsonify({"error": "insufficient balance"}), 400
 
     price = pool_price(pool)
     usdt_out = velcoin_amount * price
-
     if usdt_out > pool["usdt"]:
         return jsonify({"error": "not enough USDT in pool"}), 400
 
@@ -282,20 +229,9 @@ def sell_velcoin():
     save_state(state)
 
     tx_hash = sha256(f"SELL:{address}:{velcoin_amount}:{time.time()}")
-    add_tx_to_block({
-        "tx_hash": tx_hash,
-        "from": address,
-        "to": "POOL",
-        "amount": velcoin_amount,
-        "type": "sell"
-    })
+    add_tx_to_block({"tx_hash": tx_hash, "from": address, "to": "POOL", "amount": velcoin_amount, "type": "sell"})
 
-    return jsonify({
-        "status": "success",
-        "usdt_received": usdt_out,
-        "price": price,
-        "tx_hash": tx_hash
-    })
+    return jsonify({"status": "success", "usdt_received": usdt_out, "price": price, "tx_hash": tx_hash})
 
 # -----------------------
 if __name__ == "__main__":
