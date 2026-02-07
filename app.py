@@ -163,7 +163,97 @@ def transfer():
         "amount": amount,
         "tx_hash": msg_hash
     })
+# =========================
+# VelCoin Liquidity Pool (modulo extra no invasivo)
+# =========================
 
+POOL_FILE = "pool.json"
+
+def load_pool():
+    if os.path.exists(POOL_FILE):
+        with open(POOL_FILE, "r") as f:
+            return json.load(f)
+    return {"velcoin": 0, "usdt": 0, "history": []}
+
+def save_pool(pool):
+    with open(POOL_FILE, "w") as f:
+        json.dump(pool, f, indent=2)
+
+@app.route("/pool")
+def pool_info():
+    pool = load_pool()
+    if pool["velcoin"] == 0:
+        price = 0
+    else:
+        price = pool["usdt"] / pool["velcoin"]
+
+    return jsonify({
+        "velcoin_reserve": pool["velcoin"],
+        "usdt_reserve": pool["usdt"],
+        "price": price
+    })
+
+@app.route("/swap/buy", methods=["POST"])
+def swap_buy_velcoin():
+    data = request.get_json()
+    buyer = data.get("address")
+    usdt_amount = float(data.get("usdt", 0))
+
+    if not buyer or usdt_amount <= 0:
+        return jsonify({"error": "invalid data"}), 400
+
+    pool = load_pool()
+
+    x = pool["velcoin"]
+    y = pool["usdt"]
+
+    if x <= 0 or y <= 0:
+        return jsonify({"error": "pool empty"}), 400
+
+    # AMM formula x*y=k
+    k = x * y
+    new_y = y + usdt_amount
+    new_x = k / new_y
+    velcoin_out = x - new_x
+
+    if velcoin_out <= 0:
+        return jsonify({"error": "swap failed"}), 400
+
+    # actualizar pool
+    pool["velcoin"] = new_x
+    pool["usdt"] = new_y
+
+    tx = {
+        "type": "pool_buy",
+        "address": buyer,
+        "usdt": usdt_amount,
+        "velcoin": velcoin_out,
+        "timestamp": time.time()
+    }
+
+    pool["history"].append(tx)
+    save_pool(pool)
+
+    # acreditar VelCoin al usuario (usa tu state actual — no rompe nada)
+    state = load_state()
+    state[buyer] = state.get(buyer, 0) + velcoin_out
+    save_state(state)
+
+    # registrar en ledger existente
+    ledger = load_ledger()
+    ledger.append({
+        "tx_hash": sha256(json.dumps(tx)),
+        "from": "POOL",
+        "to": buyer,
+        "amount": velcoin_out,
+        "timestamp": time.time()
+    })
+    save_ledger(ledger)
+
+    return jsonify({
+        "status": "ok",
+        "velcoin_received": velcoin_out
+    })
 if __name__ == "__main__":
     create_genesis_block()
     import os
