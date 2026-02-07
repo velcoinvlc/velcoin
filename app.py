@@ -93,7 +93,6 @@ def save_pool(pool):
 def ensure_pool():
     pool = load_pool()
     if "velcoin" not in pool or "usdt" not in pool or pool["velcoin"] == 0:
-        # Valores iniciales ejemplo, ajusta según tu nodo original
         pool = {"velcoin": 1000000, "usdt": 50000, "history": []}
         save_pool(pool)
     return pool
@@ -104,8 +103,42 @@ def pool_price(pool):
     return pool["usdt"] / pool["velcoin"]
 
 # -----------------------
-# API ENDPOINTS
+# ADDITIONAL ENDPOINTS FOR LISTINGS
+@app.route("/supply")
+def total_supply():
+    state = load_state()
+    return jsonify({"total_supply": sum(state.values()), "symbol": "VLC"})
 
+@app.route("/holders")
+def holders():
+    state = load_state()
+    holders_list = [{"address": addr, "balance": bal} for addr, bal in state.items() if bal > 0]
+    return jsonify({"holders": holders_list, "count": len(holders_list)})
+
+@app.route("/volume24h")
+def volume_24h():
+    now = int(time.time())
+    day_ago = now - 86400
+    ledger = load_ledger()
+    vol = sum(tx.get("amount", 0) for tx in ledger if tx["timestamp"] >= day_ago)
+    return jsonify({"volume_24h": vol, "symbol": "VLC"})
+
+@app.route("/status")
+def status():
+    pool = ensure_pool()
+    state = load_state()
+    return jsonify({
+        "status": "online",
+        "network": "velcoin-mainnet",
+        "total_supply": sum(state.values()),
+        "holders_count": len([b for b in state.values() if b > 0]),
+        "pool_price": pool_price(pool),
+        "velcoin_reserve": pool["velcoin"],
+        "usdt_reserve": pool["usdt"]
+    })
+
+# -----------------------
+# STANDARD ENDPOINTS
 @app.route("/")
 def home():
     return jsonify({"status": "VelCoin node online", "network": "velcoin-mainnet"})
@@ -174,7 +207,6 @@ def transfer():
 
 # -----------------------
 # POOL ENDPOINTS
-
 @app.route("/pool")
 def get_pool():
     pool = ensure_pool()
@@ -210,7 +242,13 @@ def buy_velcoin():
     save_state(state)
 
     tx_hash = sha256(f"BUY:{address}:{velcoin_out}:{time.time()}")
-    add_tx_to_block({"tx_hash": tx_hash, "from": "POOL", "to": address, "amount": velcoin_out, "type": "buy"})
+    tx_obj = {"tx_hash": tx_hash, "from": "POOL", "to": address, "amount": velcoin_out, "type": "buy", "timestamp": int(time.time())}
+    
+    # Agregamos al ledger y blockchain
+    ledger = load_ledger()
+    ledger.append(tx_obj)
+    save_ledger(ledger)
+    add_tx_to_block(tx_obj)
 
     return jsonify({"status": "success", "vlc_received": velcoin_out, "price": price, "tx_hash": tx_hash})
 
@@ -240,7 +278,13 @@ def sell_velcoin():
     save_state(state)
 
     tx_hash = sha256(f"SELL:{address}:{velcoin_amount}:{time.time()}")
-    add_tx_to_block({"tx_hash": tx_hash, "from": address, "to": "POOL", "amount": velcoin_amount, "type": "sell"})
+    tx_obj = {"tx_hash": tx_hash, "from": address, "to": "POOL", "amount": velcoin_amount, "type": "sell", "timestamp": int(time.time())}
+    
+    # Agregamos al ledger y blockchain
+    ledger = load_ledger()
+    ledger.append(tx_obj)
+    save_ledger(ledger)
+    add_tx_to_block(tx_obj)
 
     return jsonify({"status": "success", "usdt_received": usdt_out, "price": price, "tx_hash": tx_hash})
 
