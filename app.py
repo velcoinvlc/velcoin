@@ -48,6 +48,9 @@ def sha256(msg: str) -> str:
 
 def add_tx_to_block(tx):
     chain = load_blockchain()
+    if not chain:
+        create_genesis_block()
+        chain = load_blockchain()
     last = chain[-1]
 
     block = {
@@ -86,6 +89,14 @@ def load_pool():
 def save_pool(pool):
     with open(POOL_FILE, "w") as f:
         json.dump(pool, f, indent=2)
+
+def ensure_pool():
+    pool = load_pool()
+    if "velcoin" not in pool or "usdt" not in pool or pool["velcoin"] == 0:
+        # Valores iniciales ejemplo, ajusta según tu nodo original
+        pool = {"velcoin": 1000000, "usdt": 50000, "history": []}
+        save_pool(pool)
+    return pool
 
 def pool_price(pool):
     if pool["velcoin"] == 0:
@@ -158,7 +169,7 @@ def transfer():
     ledger.append(tx)
     save_ledger(ledger)
 
-    add_block([tx])
+    add_tx_to_block([tx])
     return jsonify({"status": "success", "from": sender, "to": recipient, "amount": amount, "tx_hash": msg_hash})
 
 # -----------------------
@@ -166,7 +177,7 @@ def transfer():
 
 @app.route("/pool")
 def get_pool():
-    pool = load_pool()
+    pool = ensure_pool()
     return jsonify({
         "velcoin_reserve": pool["velcoin"],
         "usdt_reserve": pool["usdt"],
@@ -181,7 +192,7 @@ def buy_velcoin():
     if not address or usdt_amount <= 0:
         return jsonify({"error": "bad params"}), 400
 
-    pool = load_pool()
+    pool = ensure_pool()
     state = load_state()
     price = pool_price(pool)
     if price == 0:
@@ -211,7 +222,7 @@ def sell_velcoin():
     if not address or velcoin_amount <= 0:
         return jsonify({"error": "bad params"}), 400
 
-    pool = load_pool()
+    pool = ensure_pool()
     state = load_state()
     if state.get(address, 0) < velcoin_amount:
         return jsonify({"error": "insufficient balance"}), 400
@@ -236,5 +247,6 @@ def sell_velcoin():
 # -----------------------
 if __name__ == "__main__":
     create_genesis_block()
+    ensure_pool()  # inicializar pool si no existe
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
