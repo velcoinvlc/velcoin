@@ -17,7 +17,25 @@ def load_state():
 def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
+# =========================
+# VelCoin Liquidity Pool (funciones)
+# =========================
+POOL_FILE = "pool.json"
 
+def load_pool():
+    if os.path.exists(POOL_FILE):
+        with open(POOL_FILE, "r") as f:
+            return json.load(f)
+    return {"velcoin": 0, "usdt": 0, "history": []}
+
+def save_pool(pool):
+    with open(POOL_FILE, "w") as f:
+        json.dump(pool, f, indent=2)
+
+def pool_price(pool):
+    if pool["velcoin"] == 0:
+        return 0
+    return pool["usdt"] / pool["velcoin"]
 def load_ledger():
     if os.path.exists(LEDGER_FILE):
         with open(LEDGER_FILE, "r") as f:
@@ -40,7 +58,22 @@ def save_blockchain(chain):
 
 def sha256(msg: str) -> str:
     return hashlib.sha256(msg.encode()).hexdigest()
+def add_tx_to_block(tx):
+    chain = load_blockchain()
+    last = chain[-1]
 
+    block = {
+        "index": last["index"] + 1,
+        "previous_hash": last["block_hash"],
+        "timestamp": int(time.time()),
+        "transactions": [tx]
+    }
+
+    raw = json.dumps(block, sort_keys=True)
+    block["block_hash"] = sha256(raw)
+
+    chain.append(block)
+    save_blockchain(chain)
 # -----------------------
 def create_genesis_block():
     chain = load_blockchain()
@@ -253,6 +286,106 @@ def swap_buy_velcoin():
     return jsonify({
         "status": "ok",
         "velcoin_received": velcoin_out
+    })
+ @app.route("/pool")
+def get_pool():
+    pool = load_pool()
+    return jsonify({
+        "velcoin_reserve": pool["velcoin"],
+        "usdt_reserve": pool["usdt"],
+        "price": pool_price(pool)
+    }) 
+   @app.route("/buy", methods=["POST"])
+def buy_velcoin():
+    data = request.get_json()
+    address = data.get("address")
+    usdt_amount = float(data.get("usdt", 0))
+
+    if not address or usdt_amount <= 0:
+        return jsonify({"error": "bad params"}), 400
+
+    pool = load_pool()
+    state = load_state()
+    price = pool_price(pool)
+
+    if price == 0:
+        return jsonify({"error": "pool empty"}), 400
+
+    velcoin_out = usdt_amount / price
+
+    if velcoin_out > pool["velcoin"]:
+        return jsonify({"error": "not enough liquidity"}), 400
+
+    # actualizar pool
+    pool["usdt"] += usdt_amount
+    pool["velcoin"] -= velcoin_out
+    save_pool(pool)
+
+    # acreditar usuario
+    state[address] = state.get(address, 0) + velcoin_out
+    save_state(state)
+
+    # registrar tx
+    tx_hash = sha256(f"BUY:{address}:{velcoin_out}:{time.time()}")
+    add_tx_to_block({
+        "tx_hash": tx_hash,
+        "from": "POOL",
+        "to": address,
+        "amount": velcoin_out,
+        "type": "buy"
+    })
+
+    return jsonify({
+        "status": "success",
+        "vlc_received": velcoin_out,
+        "price": price,
+        "tx_hash": tx_hash
+    }) 
+    @app.route("/sell", methods=["POST"])
+def sell_velcoin():
+    data = request.get_json()
+    address = data.get("address")
+    velcoin_amount = float(data.get("vlc", 0))
+
+    if not address or velcoin_amount <= 0:
+        return jsonify({"error": "bad params"}), 400
+
+    pool = load_pool()
+    state = load_state()
+
+    if state.get(address, 0) < velcoin_amount:
+        return jsonify({"error": "insufficient balance"}), 400
+
+    price = pool_price(pool)
+    usdt_out = velcoin_amount * price
+
+    if usdt_out > pool["usdt"]:
+        return jsonify({"error": "not enough USDT in pool"}), 400
+
+    # actualizar pool
+    pool["usdt"] -= usdt_out
+    pool["velcoin"] += velcoin_amount
+    save_pool(pool)
+
+    # debitar usuario
+    state[address] -= velcoin_amount
+    save_state(state)
+
+    # registrar tx
+    tx_hash = sha256(f"SELL:{address}:{velcoin_amount}:{time.time()}")
+    add_tx_to_block({
+        "tx_hash": tx_hash,
+        "from": address,
+        "to": "POOL",
+        "amount": velcoin_amount,
+        "type": "sell"
+    })
+
+    return jsonify({
+        "status": "success",
+        "usdt_received": usdt_out,
+        "price": price,
+        "tx_hash": tx_hash
     })
 if __name__ == "__main__":
     create_genesis_block()
