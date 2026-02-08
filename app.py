@@ -84,22 +84,33 @@ def load_pool():
 def save_pool(p):
     json.dump(p, open(POOL_FILE, "w"), indent=2)
 
-def ensure_pool():
-    p = load_pool()
-    if not p or "usdt" not in p:
-        p = {
-            "velcoin": 1_000_000,
-            "usdt": 50_000,
-            "trx": 100_000
+def migrate_pool(pool):
+    if "velcoin" not in pool:
+        pool["velcoin"] = 1_000_000
+    if "usdt" not in pool:
+        pool["usdt"] = 50_000
+    if "trx" not in pool:
+        pool["trx"] = 100_000
+    if "history" not in pool:
+        pool["history"] = []
+    if "limits" not in pool:
+        pool["limits"] = {
+            "max_buy_usdt": 5000,
+            "max_buy_trx": 20000,
+            "max_sell_vlc": 100_000
         }
-        save_pool(p)
+    return pool
+
+def ensure_pool():
+    p = migrate_pool(load_pool())
+    save_pool(p)
     return p
 
 def price_usdt(p):
-    return p["usdt"] / p["velcoin"]
+    return p["usdt"] / p["velcoin"] if p["velcoin"] != 0 else 0
 
 def price_trx(p):
-    return p["trx"] / p["velcoin"]
+    return p["trx"] / p["velcoin"] if p["velcoin"] != 0 else 0
 
 # -----------------------
 # LISTING ENDPOINTS
@@ -117,6 +128,18 @@ def status():
         "price_trx": price_trx(p)
     })
 
+@app.route("/pool")
+def pool_info():
+    p = ensure_pool()
+    return jsonify({
+        "velcoin": p["velcoin"],
+        "usdt": p["usdt"],
+        "trx": p["trx"],
+        "price_usdt": price_usdt(p),
+        "price_trx": price_trx(p),
+        "history_count": len(p["history"])
+    })
+
 @app.route("/supply")
 def supply():
     s = load_state()
@@ -125,14 +148,24 @@ def supply():
 @app.route("/holders")
 def holders():
     s = load_state()
-    h = [{"address": a, "balance": b} for a,b in s.items() if b>0]
-    return jsonify({"count": len(h), "holders": h})
+    p = ensure_pool()
+    # Construir balances sumando state + historial pool
+    holder_balances = s.copy()
+    for h in p["history"]:
+        addr = h["address"]
+        vlc = h.get("vlc", 0)
+        if h["type"] in ["sell"]:
+            holder_balances[addr] = holder_balances.get(addr, 0) - vlc
+        elif h["type"] in ["buy_usdt", "buy_trx"]:
+            holder_balances[addr] = holder_balances.get(addr, 0) + vlc
+    h_list = [{"address": a, "balance": b} for a, b in holder_balances.items() if b > 0]
+    return jsonify({"count": len(h_list), "holders": h_list})
 
 @app.route("/volume24h")
 def vol24():
     now = int(time.time()) - 86400
-    l = load_ledger()
-    v = sum(tx["amount"] for tx in l if tx["timestamp"] >= now)
+    p = ensure_pool()
+    v = sum(tx.get("vlc", 0) for tx in p["history"] if tx["timestamp"] >= now)
     return jsonify({"volume_24h": v})
 
 # -----------------------
@@ -179,6 +212,14 @@ def buy_usdt():
 
     p["usdt"] += usdt
     p["velcoin"] -= out
+    p["history"].append({
+        "type": "buy_usdt",
+        "address": addr,
+        "vlc": out,
+        "usdt": usdt,
+        "trx": 0,
+        "timestamp": int(time.time())
+    })
     save_pool(p)
 
     s[addr] = s.get(addr,0) + out
@@ -214,6 +255,14 @@ def buy_trx():
 
     p["trx"] += trx
     p["velcoin"] -= out
+    p["history"].append({
+        "type": "buy_trx",
+        "address": addr,
+        "vlc": out,
+        "usdt": 0,
+        "trx": trx,
+        "timestamp": int(time.time())
+    })
     save_pool(p)
 
     s[addr] = s.get(addr,0) + out
@@ -248,6 +297,14 @@ def sell():
 
     p["usdt"] -= usdt
     p["velcoin"] += vlc
+    p["history"].append({
+        "type": "sell",
+        "address": addr,
+        "vlc": vlc,
+        "usdt": usdt,
+        "trx": 0,
+        "timestamp": int(time.time())
+    })
     save_pool(p)
 
     s[addr] -= vlc
