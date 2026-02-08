@@ -44,6 +44,11 @@ def load_ledger():
 def save_ledger(l):
     json.dump(l, open(LEDGER_FILE, "w"), indent=2)
 
+def ensure_ledger():
+    if not os.path.exists(LEDGER_FILE):
+        save_ledger([])
+    return load_ledger()
+
 # -----------------------
 # BLOCKCHAIN
 def load_blockchain():
@@ -56,6 +61,12 @@ def load_blockchain():
 
 def save_blockchain(c):
     json.dump(c, open(BLOCKCHAIN_FILE, "w"), indent=2)
+
+def ensure_blockchain():
+    if not os.path.exists(BLOCKCHAIN_FILE):
+        save_blockchain([])
+    create_genesis_block()
+    return load_blockchain()
 
 def create_genesis_block():
     chain = load_blockchain()
@@ -71,11 +82,7 @@ def create_genesis_block():
         save_blockchain(chain)
 
 def add_tx_to_block(tx):
-    chain = load_blockchain()
-    if not chain:
-        create_genesis_block()
-        chain = load_blockchain()
-
+    chain = ensure_blockchain()
     last = chain[-1]
     block = {
         "index": last["index"] + 1,
@@ -265,7 +272,7 @@ def buy_usdt():
 
         txh = sha256(f"BUYUSDT:{addr}:{out}:{time.time()}")
         tx = {"tx_hash":txh,"from":"POOL","to":addr,"amount":out,"type":"buy_usdt","timestamp":int(time.time())}
-        l = load_ledger(); l.append(tx); save_ledger(l)
+        l = ensure_ledger(); l.append(tx); save_ledger(l)
         add_tx_to_block(tx)
 
         return jsonify({"status":"success","vlc_received":out,"price":price,"tx_hash":txh})
@@ -306,7 +313,7 @@ def buy_trx():
 
         txh = sha256(f"BUYTRX:{addr}:{out}:{time.time()}")
         tx = {"tx_hash":txh,"from":"POOL","to":addr,"amount":out,"type":"buy_trx","timestamp":int(time.time())}
-        l = load_ledger(); l.append(tx); save_ledger(l)
+        l = ensure_ledger(); l.append(tx); save_ledger(l)
         add_tx_to_block(tx)
 
         return jsonify({"status":"success","vlc_received":out,"price":price,"tx_hash":txh})
@@ -347,7 +354,7 @@ def sell():
 
         txh = sha256(f"SELL:{addr}:{vlc}:{time.time()}")
         tx = {"tx_hash":txh,"from":addr,"to":"POOL","amount":vlc,"type":"sell","timestamp":int(time.time())}
-        l = load_ledger(); l.append(tx); save_ledger(l)
+        l = ensure_ledger(); l.append(tx); save_ledger(l)
         add_tx_to_block(tx)
 
         return jsonify({"status":"success","usdt_received":usdt,"tx_hash":txh})
@@ -358,5 +365,6 @@ def sell():
 if __name__ == "__main__":
     create_genesis_block()
     ensure_pool()
+    ensure_ledger()
     port = int(os.environ.get("PORT",5000))
     app.run(host="0.0.0.0", port=port)
