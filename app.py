@@ -214,8 +214,9 @@ def pool():
 
 @app.route("/balance/<a>")
 def bal(a):
-    b = load_state().get(a,0)
-    return jsonify({"address": a, "balance": round(b,6)})
+    b = load_state().get(a, 0)
+    # Formatear con 6 decimales como string
+    return jsonify({"address": a, "balance": f"{b:.6f}"})
 
 @app.route("/blocks")
 def blocks(): return jsonify(load_blockchain())
