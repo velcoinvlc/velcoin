@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, request
-import json, os, hashlib, time
+import json, os, hashlib, time, threading
 from ecdsa import VerifyingKey, SECP256k1, BadSignatureError
+import requests
 
 app = Flask(__name__)
 
@@ -134,6 +135,84 @@ def price_usdt(p):
 
 def price_trx(p):
     return p["trx"] / p["velcoin"] if p["velcoin"] != 0 else 0
+
+# -----------------------
+# TRON WALLET INTEGRATION
+TRON_WALLET = "TJXrApg9D7xPSdGKVdCeeCvsmDbiEbDL34"
+TRONGRID_API = "https://api.trongrid.io/v1/accounts"
+USDT_CONTRACT = "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7"
+
+processed_txs = set()  # Para no procesar dos veces la misma transacción
+
+def get_trx_balance(wallet=TRON_WALLET):
+    try:
+        url = f"{TRONGRID_API}/{wallet}"
+        r = requests.get(url)
+        if r.status_code != 200:
+            return 0
+        data = r.json()
+        return int(data.get("data", [{}])[0].get("balance", 0)) / 1_000_000
+    except:
+        return 0
+
+def get_usdt_trc20_balance(wallet=TRON_WALLET, contract=USDT_CONTRACT):
+    try:
+        url = f"{TRONGRID_API}/{wallet}/transactions/trc20?limit=50"
+        r = requests.get(url)
+        if r.status_code != 200:
+            return 0
+        data = r.json()
+        total = 0
+        for tx in data.get("data", []):
+            if tx["to"] == wallet and tx["contract_address"] == contract:
+                tx_hash = tx.get("transaction_id")
+                if tx_hash in processed_txs:
+                    continue
+                processed_txs.add(tx_hash)
+                total += int(tx["value"]) / 1_000_000
+        return total
+    except:
+        return 0
+
+def check_new_deposits():
+    p = ensure_pool()
+    s = load_state()
+
+    # TRX
+    trx_balance = get_trx_balance()
+    if trx_balance > 0:
+        price = price_trx(p)
+        vlc_received = trx_balance / price
+        s[TRON_WALLET] = s.get(TRON_WALLET, 0) + vlc_received
+        add_tx_to_block({
+            "tx_hash": sha256(f"TRX:{TRON_WALLET}:{vlc_received}:{time.time()}"),
+            "from": "TRON",
+            "to": TRON_WALLET,
+            "amount": vlc_received,
+            "type": "buy_trx",
+            "timestamp": int(time.time())
+        })
+        save_state(s)
+        print(f"✅ Depósito TRX detectado: {trx_balance} TRX → {vlc_received} VLC")
+
+    # USDT
+    usdt_balance = get_usdt_trc20_balance()
+    if usdt_balance > 0:
+        price = price_usdt(p)
+        vlc_received = usdt_balance / price
+        s[TRON_WALLET] = s.get(TRON_WALLET, 0) + vlc_received
+        add_tx_to_block({
+            "tx_hash": sha256(f"USDT:{TRON_WALLET}:{vlc_received}:{time.time()}"),
+            "from": "TRON",
+            "to": TRON_WALLET,
+            "amount": vlc_received,
+            "type": "buy_usdt",
+            "timestamp": int(time.time())
+        })
+        save_state(s)
+        print(f"✅ Depósito USDT detectado: {usdt_balance} USDT → {vlc_received} VLC")
+
+    threading.Timer(10, check_new_deposits).start()
 
 # -----------------------
 # ENDPOINTS CON TRY/EXCEPT PARA PRODUCCIÓN
@@ -393,5 +472,6 @@ if __name__ == "__main__":
     create_genesis_block()
     ensure_pool()
     ensure_ledger()
+    check_new_deposits()  # INICIAR MONITOREO DE DEPOSITOS REALES
     port = int(os.environ.get("PORT",5000))
     app.run(host="0.0.0.0", port=port)
