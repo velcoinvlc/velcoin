@@ -225,7 +225,20 @@ def blocks():
         return jsonify(load_blockchain())
     except Exception as e:
         return jsonify({"error": str(e)})
+@app.route("/tx_address/<address>")
+def tx_by_address(address):
+    try:
+        chain = load_blockchain()
+        result = []
 
+        for block in chain:
+            for tx in block.get("transactions", []):
+                if tx.get("from") == address or tx.get("to") == address:
+                    result.append(tx)
+
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)})
 @app.route("/tx/<h>")
 def tx(h):
     try:
