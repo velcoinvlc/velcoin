@@ -231,25 +231,33 @@ def tx_by_address(address):
     try:
         chain = load_blockchain()
         result = []
-
         for block in chain:
             for tx in block.get("transactions", []):
                 if tx.get("from") == address or tx.get("to") == address:
                     result.append(tx)
-
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)})
 
 @app.route("/wallet/tx/<address>")
 def wallet_tx_alias(address):
-    return tx_by_address(address)
+    try:
+        chain = load_blockchain()
+        result = []
+        for block in chain:
+            for tx in block.get("transactions", []):
+                if tx.get("from") == address or tx.get("to") == address:
+                    result.append(tx)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 @app.route("/tx/<h>")
 def tx(h):
     try:
-        for t in load_ledger():
-            if t["tx_hash"] == h:
+        ledger = load_ledger()
+        for t in ledger:
+            if t.get("tx_hash") == h:
                 return jsonify(t)
         return jsonify({"error":"not found"}),404
     except Exception as e:
