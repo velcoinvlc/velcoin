@@ -111,8 +111,8 @@ def get_trx_balance():
     try:
         r = requests.get(f"{TRONGRID}/{TRON_WALLET}")
         data = r.json()
-        # Usar float directamente y dividir por 1_000_000 para obtener el balance real
-        return float(data["data"][0]["balance"]) / 1_000_000
+        # data["balance"] está en sun, convertir a TRX
+        return int(data["data"][0]["balance"]) / 1_000_000
     except:
         return 0
 
@@ -215,7 +215,7 @@ def pool():
 @app.route("/balance/<a>")
 def bal(a):
     b = load_state().get(a, 0)
-    # Formatear con 6 decimales como string
+    # Corregido para mostrar balance exacto como en TronLink
     return jsonify({"address": a, "balance": f"{b:.6f}"})
 
 @app.route("/blocks")
