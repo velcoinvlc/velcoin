@@ -20,13 +20,15 @@ def sha256(msg):
 def load_json(path, default):
     if os.path.exists(path):
         try:
-            return json.load(open(path))
+            with open(path) as f:
+                return json.load(f)
         except:
             return default
     return default
 
 def save_json(path, data):
-    json.dump(data, open(path,"w"), indent=2)
+    with open(path,"w") as f:
+        json.dump(data, f, indent=2)
 
 # -----------------------
 # STATE
@@ -38,8 +40,14 @@ def save_state(x): save_json(STATE_FILE, x)
 def load_ledger(): return load_json(LEDGER_FILE, [])
 def save_ledger(x): save_json(LEDGER_FILE, x)
 def ensure_ledger():
-    if not os.path.exists(LEDGER_FILE): save_ledger([])
+    if not os.path.exists(LEDGER_FILE):
+        save_ledger([])
     return load_ledger()
+
+def append_ledger(tx):
+    l = ensure_ledger()
+    l.append(tx)
+    save_ledger(l)
 
 # -----------------------
 # BLOCKCHAIN
@@ -48,7 +56,8 @@ def save_blockchain(x): save_json(BLOCKCHAIN_FILE, x)
 
 def create_genesis_block():
     chain = load_blockchain()
-    if chain: return
+    if chain:
+        return
     g = {
         "index":0,
         "timestamp":int(time.time()),
@@ -61,6 +70,10 @@ def create_genesis_block():
 
 def add_tx_to_block(tx):
     chain = load_blockchain()
+    if not chain:
+        create_genesis_block()
+        chain = load_blockchain()
+
     last = chain[-1]
     b = {
         "index": last["index"]+1,
@@ -86,8 +99,11 @@ def ensure_pool():
     save_json(POOL_FILE,p)
     return p
 
-def price_usdt(p): return p["usdt"]/p["velcoin"]
-def price_trx(p): return p["trx"]/p["velcoin"]
+def price_usdt(p):
+    return p["usdt"]/p["velcoin"] if p["velcoin"] else 0
+
+def price_trx(p):
+    return p["trx"]/p["velcoin"] if p["velcoin"] else 0
 
 # -----------------------
 # TRON CONFIG
@@ -103,7 +119,7 @@ def save_processed():
 
 def get_trx_balance():
     try:
-        r=requests.get(f"{TRONGRID}/{TRON_WALLET}")
+        r=requests.get(f"{TRONGRID}/{TRON_WALLET}", timeout=10)
         data=r.json()
         return data["data"][0]["balance"]/1_000_000
     except:
@@ -111,7 +127,7 @@ def get_trx_balance():
 
 def scan_usdt_txs():
     try:
-        r=requests.get(f"{TRONGRID}/{TRON_WALLET}/transactions/trc20?limit=50")
+        r=requests.get(f"{TRONGRID}/{TRON_WALLET}/transactions/trc20?limit=50", timeout=10)
         data=r.json()["data"]
         new=0
         for tx in data:
@@ -135,12 +151,11 @@ def check_deposits_loop():
             p=ensure_pool()
             s=load_state()
 
-            # TRX delta
             trx_now=get_trx_balance()
             delta_trx=max(trx_now-last_trx_balance,0)
             last_trx_balance=trx_now
 
-            if delta_trx>0:
+            if delta_trx>0 and price_trx(p)>0:
                 vlc=delta_trx/price_trx(p)
                 s[TRON_WALLET]=s.get(TRON_WALLET,0)+vlc
                 save_state(s)
@@ -150,12 +165,11 @@ def check_deposits_loop():
                     "amount":vlc,"type":"buy_trx",
                     "timestamp":int(time.time())
                 }
-                ensure_ledger().append(tx)
+                append_ledger(tx)
                 add_tx_to_block(tx)
 
-            # USDT deposits
             new_usdt=scan_usdt_txs()
-            if new_usdt>0:
+            if new_usdt>0 and price_usdt(p)>0:
                 vlc=new_usdt/price_usdt(p)
                 s[TRON_WALLET]=s.get(TRON_WALLET,0)+vlc
                 save_state(s)
@@ -165,7 +179,7 @@ def check_deposits_loop():
                     "amount":vlc,"type":"buy_usdt",
                     "timestamp":int(time.time())
                 }
-                ensure_ledger().append(tx)
+                append_ledger(tx)
                 add_tx_to_block(tx)
 
         except Exception as e:
@@ -174,7 +188,16 @@ def check_deposits_loop():
         time.sleep(15)
 
 # -----------------------
-# API
+# API ROOT (FALTABA)
+@app.route("/")
+def root():
+    return jsonify({
+        "node":"VelCoin",
+        "network":"velcoin-mainnet",
+        "status":"online"
+    })
+
+# -----------------------
 @app.route("/status")
 def status():
     p=ensure_pool(); s=load_state()
@@ -188,9 +211,19 @@ def status():
     })
 
 @app.route("/pool")
-def pool(): 
-    p=ensure_pool()
-    return jsonify(p)
+def pool(): return jsonify(ensure_pool())
+
+@app.route("/supply")
+def supply():
+    return jsonify({"total_supply":sum(load_state().values())})
+
+@app.route("/holders")
+def holders():
+    s=load_state()
+    return jsonify([
+        {"address":a,"balance":b}
+        for a,b in s.items() if b>0
+    ])
 
 @app.route("/balance/<a>")
 def bal(a):
@@ -199,18 +232,31 @@ def bal(a):
 @app.route("/blocks")
 def blocks(): return jsonify(load_blockchain())
 
+@app.route("/tx/<h>")
+def tx_lookup(h):
+    for t in load_ledger():
+        if t["tx_hash"]==h:
+            return jsonify(t)
+    return jsonify({"error":"not found"}),404
+
+# -----------------------
 @app.route("/buy",methods=["POST"])
 def buy():
     d=request.json
     addr=d["address"]; usdt=float(d["usdt"])
     p=ensure_pool(); s=load_state()
-    out=usdt/price_usdt(p)
+    price=price_usdt(p)
+    if price==0: return jsonify({"error":"price"}),400
+    out=usdt/price
     if out>p["velcoin"]: return jsonify({"error":"liquidity"}),400
+
     p["usdt"]+=usdt; p["velcoin"]-=out
     s[addr]=s.get(addr,0)+out
     save_json(POOL_FILE,p); save_state(s)
-    tx={"tx_hash":sha256(str(time.time())),"from":"POOL","to":addr,"amount":out}
-    ensure_ledger().append(tx); add_tx_to_block(tx)
+
+    tx={"tx_hash":sha256(str(time.time())),"from":"POOL","to":addr,"amount":out,"type":"buy"}
+    append_ledger(tx)
+    add_tx_to_block(tx)
     return jsonify({"vlc":out})
 
 @app.route("/sell",methods=["POST"])
@@ -219,18 +265,25 @@ def sell():
     addr=d["address"]; vlc=float(d["vlc"])
     s=load_state(); p=ensure_pool()
     if s.get(addr,0)<vlc: return jsonify({"error":"balance"}),400
-    usdt=vlc*price_usdt(p)
+
+    price=price_usdt(p)
+    usdt=vlc*price
     p["usdt"]-=usdt; p["velcoin"]+=vlc
     s[addr]-=vlc
     save_json(POOL_FILE,p); save_state(s)
-    tx={"tx_hash":sha256(str(time.time())),"from":addr,"to":"POOL","amount":vlc}
-    ensure_ledger().append(tx); add_tx_to_block(tx)
+
+    tx={"tx_hash":sha256(str(time.time())),"from":addr,"to":"POOL","amount":vlc,"type":"sell"}
+    append_ledger(tx)
+    add_tx_to_block(tx)
     return jsonify({"usdt":usdt})
 
 # -----------------------
-# INIT FOR GUNICORN / RENDER
+# INIT
 create_genesis_block()
 ensure_pool()
 ensure_ledger()
-
 threading.Thread(target=check_deposits_loop,daemon=True).start()
+
+if __name__ == "__main__":
+    port=int(os.environ.get("PORT",5000))
+    app.run(host="0.0.0.0", port=port)
