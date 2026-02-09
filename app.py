@@ -79,50 +79,61 @@ def add_tx_to_block(tx):
     save_blockchain(chain)
 
 # -----------------------
-# POOL
-def migrate_pool(p):
-    p.setdefault("velcoin",1_000_000)
-    p.setdefault("usdt",50_000)
-    p.setdefault("trx",100_000)
-    p.setdefault("history",[])
-    return p
-
-def ensure_pool():
-    p = migrate_pool(load_json(POOL_FILE,{}))
-    save_json(POOL_FILE,p)
-    return p
-
-def price_usdt(p): return p["usdt"]/p["velcoin"] if p["velcoin"]>0 else 0
-def price_trx(p): return p["trx"]/p["velcoin"] if p["velcoin"]>0 else 0
-
-# -----------------------
 # WALLET CONFIG
-TRX_WALLET = "TJXrApg9D7xPSdGKVdCeeCvsmDbiEbDL34"  # Wallet de TronLink para recibir TRX y USDT
+TRX_WALLET = "TJXrApg9D7xPSdGKVdCeeCvsmDbiEbDL34"        # Wallet real de TRX/USDT
 FUND_WALLET = "6d627bb087faa32a00ed18749af72185de31a038"  # Wallet fundadora VLC
 TRONGRID = "https://api.trongrid.io/v1/accounts"
 USDT_CONTRACT = "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7"
 
 processed = set(load_json(PROCESSED_FILE, []))
 last_trx_balance = 0
+last_usdt_balance = 0
 
 def save_processed():
     save_json(PROCESSED_FILE, list(processed))
 
 # -----------------------
-# SALDO TRX REAL
+# POOL REAL
+def ensure_pool():
+    """
+    Pool real: toma saldo actual de wallets TRX y USDT
+    y cantidad de VLC en wallet fundadora.
+    """
+    p = load_json(POOL_FILE,{})
+    try:
+        # Saldo real TRX
+        trx_balance = get_trx_balance(TRX_WALLET)
+        # Saldo real USDT
+        usdt_balance = scan_usdt_txs(TRX_WALLET)
+        # Saldo VLC real
+        s = load_state()
+        vlc_balance = s.get(FUND_WALLET,0)
+
+        p = {
+            "trx": trx_balance,
+            "usdt": usdt_balance,
+            "velcoin": vlc_balance,
+            "history": [],
+        }
+        save_json(POOL_FILE,p)
+        return p
+    except:
+        # fallback en caso de error
+        return {"trx":0,"usdt":0,"velcoin":0,"history":[]}
+
+def price_usdt(p): return p["usdt"]/p["velcoin"] if p["velcoin"]>0 else 0
+def price_trx(p): return p["trx"]/p["velcoin"] if p["velcoin"]>0 else 0
+
+# -----------------------
+# FUNCIONES DE TRON
 def get_trx_balance(wallet):
-    """Devuelve el saldo real de TRX de la wallet especificada."""
     try:
         r = requests.get(f"{TRONGRID}/{wallet}")
         data = r.json()
-        if "data" in data and len(data["data"]) > 0 and "balance" in data["data"][0]:
-            balance_sun = int(data["data"][0]["balance"])
-            balance_trx = balance_sun / 1_000_000  # Convertir SUN a TRX
-            return float(f"{balance_trx:.6f}")     # 6 decimales exactos
-        return 0.0
-    except Exception as e:
-        logging.error(f"Error get_trx_balance: {e}")
-        return 0.0
+        balance = int(data["data"][0]["balance"])
+        return float(f"{balance/1_000_000:.6f}")  # 6 decimales exactos
+    except:
+        return 0
 
 def scan_usdt_txs(wallet):
     try:
@@ -144,46 +155,53 @@ def scan_usdt_txs(wallet):
 # -----------------------
 # DEPOSIT MONITOR
 def check_deposits_loop():
-    global last_trx_balance
+    global last_trx_balance, last_usdt_balance
     while True:
         try:
-            p=ensure_pool()
-            s=load_state()
+            p = ensure_pool()
+            s = load_state()
 
             # TRX delta
-            trx_now=get_trx_balance(TRX_WALLET)
-            delta_trx=max(trx_now-last_trx_balance,0)
-            last_trx_balance=trx_now
+            trx_now = get_trx_balance(TRX_WALLET)
+            delta_trx = max(trx_now - last_trx_balance, 0)
+            last_trx_balance = trx_now
 
             if delta_trx>0:
-                vlc=delta_trx/price_trx(p)
-                s[FUND_WALLET]=s.get(FUND_WALLET,0)+vlc
+                vlc = delta_trx / price_trx(p)
+                s[FUND_WALLET] = s.get(FUND_WALLET,0) + vlc
                 save_state(s)
                 tx={
                     "tx_hash":sha256(f"TRX:{time.time()}"),
-                    "from":"TRON","to":FUND_WALLET,
-                    "amount":vlc,"type":"buy_trx",
+                    "from":"TRON",
+                    "to":FUND_WALLET,
+                    "amount":vlc,
+                    "type":"buy_trx",
                     "timestamp":int(time.time())
                 }
                 ensure_ledger().append(tx)
                 add_tx_to_block(tx)
                 logging.info(f"Deposit TRX: {delta_trx} TRX -> {vlc} VLC")
 
-            # USDT deposits
-            new_usdt=scan_usdt_txs(TRX_WALLET)
-            if new_usdt>0:
-                vlc=new_usdt/price_usdt(p)
-                s[FUND_WALLET]=s.get(FUND_WALLET,0)+vlc
+            # USDT delta
+            usdt_now = scan_usdt_txs(TRX_WALLET)
+            delta_usdt = max(usdt_now - last_usdt_balance, 0)
+            last_usdt_balance = usdt_now
+
+            if delta_usdt>0:
+                vlc = delta_usdt / price_usdt(p)
+                s[FUND_WALLET] = s.get(FUND_WALLET,0) + vlc
                 save_state(s)
                 tx={
                     "tx_hash":sha256(f"USDT:{time.time()}"),
-                    "from":"TRON","to":FUND_WALLET,
-                    "amount":vlc,"type":"buy_usdt",
+                    "from":"TRON",
+                    "to":FUND_WALLET,
+                    "amount":vlc,
+                    "type":"buy_usdt",
                     "timestamp":int(time.time())
                 }
                 ensure_ledger().append(tx)
                 add_tx_to_block(tx)
-                logging.info(f"Deposit USDT: {new_usdt} USDT -> {vlc} VLC")
+                logging.info(f"Deposit USDT: {delta_usdt} USDT -> {vlc} VLC")
 
         except Exception as e:
             logging.error(f"Deposit loop error: {e}")
@@ -222,11 +240,11 @@ def pool():
 
 @app.route("/balance/<a>")
 def bal(a):
-    # Wallet TRX devuelve saldo real
+    # Si es la wallet de TRX, devuelve saldo real
     if a == TRX_WALLET:
         trx_balance = get_trx_balance(TRX_WALLET)
         return jsonify({"address": a, "balance": f"{trx_balance:.6f}"})
-    # Wallet fundadora u otras wallets devuelve VLC
+    # Si es cualquier otra wallet, devuelve VLC
     b = load_state().get(a, 0)
     return jsonify({"address": a, "balance": f"{b:.6f}"})
 
@@ -243,8 +261,8 @@ def buy():
         p=ensure_pool(); s=load_state()
         out=usdt/price_usdt(p)
         if out>p["velcoin"]: return jsonify({"error":"liquidity"}),400
-        p["usdt"]+=usdt; p["velcoin"]-=out
-        s[addr]=s.get(addr,0)+out
+        p["usdt"] += usdt; p["velcoin"] -= out
+        s[addr] = s.get(addr,0) + out
         save_json(POOL_FILE,p); save_state(s)
         tx={"tx_hash":sha256(str(time.time())),"from":"POOL","to":addr,"amount":out,"type":"buy_usdt","timestamp":int(time.time())}
         ensure_ledger().append(tx); add_tx_to_block(tx)
@@ -262,7 +280,7 @@ def sell():
         s=load_state(); p=ensure_pool()
         if s.get(addr,0)<vlc: return jsonify({"error":"balance"}),400
         usdt=vlc*price_usdt(p)
-        p["usdt"]-=usdt; p["velcoin"]+=vlc
+        p["usdt"] -= usdt; p["velcoin"] += vlc
         s[addr]-=vlc
         save_json(POOL_FILE,p); save_state(s)
         tx={"tx_hash":sha256(str(time.time())),"from":addr,"to":"POOL","amount":vlc,"type":"sell","timestamp":int(time.time())}
