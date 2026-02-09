@@ -239,6 +239,9 @@ def tx_by_address(address):
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)})
+  @app.route("/wallet/tx/<address>")
+def wallet_tx_alias(address):
+    return tx_by_address(address)      
 @app.route("/tx/<h>")
 def tx(h):
     try:
