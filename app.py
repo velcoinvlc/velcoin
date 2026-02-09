@@ -183,6 +183,15 @@ def check_deposits_loop():
 
 # -----------------------
 # API
+@app.route("/")
+def index():
+    return jsonify({
+        "network":"velcoin-mainnet",
+        "node":"VelCoin",
+        "status":"online",
+        "message":"Bienvenido a VelCoin node API. Usa /status, /pool, /balance/<address>, /blocks, /buy o /sell."
+    })
+
 @app.route("/status")
 def status():
     p=ensure_pool(); s=load_state()
