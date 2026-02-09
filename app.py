@@ -96,10 +96,11 @@ def price_usdt(p): return p["usdt"]/p["velcoin"] if p["velcoin"]>0 else 0
 def price_trx(p): return p["trx"]/p["velcoin"] if p["velcoin"]>0 else 0
 
 # -----------------------
-# TRON CONFIG
-TRON_WALLET="TJXrApg9D7xPSdGKVdCeeCvsmDbiEbDL34"
-TRONGRID="https://api.trongrid.io/v1/accounts"
-USDT_CONTRACT="TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7"
+# WALLET CONFIG
+TRX_WALLET = "TU_WALLET_TRONLINK_AQUI"  # <- reemplaza con tu wallet real de TRX
+FUND_WALLET = "6d627bb087faa32a00ed18749af72185de31a038"
+TRONGRID = "https://api.trongrid.io/v1/accounts"
+USDT_CONTRACT = "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7"
 
 processed = set(load_json(PROCESSED_FILE, []))
 last_trx_balance = 0
@@ -107,22 +108,25 @@ last_trx_balance = 0
 def save_processed():
     save_json(PROCESSED_FILE, list(processed))
 
-def get_trx_balance():
+# -----------------------
+# SALDO TRX REAL
+def get_trx_balance(wallet):
     try:
-        r = requests.get(f"{TRONGRID}/{TRON_WALLET}")
+        r = requests.get(f"{TRONGRID}/{wallet}")
         data = r.json()
-        # data["balance"] está en sun, convertir a TRX
-        return int(data["data"][0]["balance"]) / 1_000_000
+        balance = int(data["data"][0]["balance"])
+        # Convertir a TRX con 6 decimales exactos, sin notación científica
+        return float(f"{balance/1_000_000:.6f}")
     except:
         return 0
 
-def scan_usdt_txs():
+def scan_usdt_txs(wallet):
     try:
-        r=requests.get(f"{TRONGRID}/{TRON_WALLET}/transactions/trc20?limit=50")
+        r=requests.get(f"{TRONGRID}/{wallet}/transactions/trc20?limit=50")
         data=r.json()["data"]
         new=0
         for tx in data:
-            if tx["to"]!=TRON_WALLET: continue
+            if tx["to"]!=wallet: continue
             if tx["contract_address"]!=USDT_CONTRACT: continue
             h=tx["transaction_id"]
             if h in processed: continue
@@ -143,17 +147,17 @@ def check_deposits_loop():
             s=load_state()
 
             # TRX delta
-            trx_now=get_trx_balance()
+            trx_now=get_trx_balance(TRX_WALLET)
             delta_trx=max(trx_now-last_trx_balance,0)
             last_trx_balance=trx_now
 
             if delta_trx>0:
                 vlc=delta_trx/price_trx(p)
-                s[TRON_WALLET]=s.get(TRON_WALLET,0)+vlc
+                s[FUND_WALLET]=s.get(FUND_WALLET,0)+vlc
                 save_state(s)
                 tx={
                     "tx_hash":sha256(f"TRX:{time.time()}"),
-                    "from":"TRON","to":TRON_WALLET,
+                    "from":"TRON","to":FUND_WALLET,
                     "amount":vlc,"type":"buy_trx",
                     "timestamp":int(time.time())
                 }
@@ -162,14 +166,14 @@ def check_deposits_loop():
                 logging.info(f"Deposit TRX: {delta_trx} TRX -> {vlc} VLC")
 
             # USDT deposits
-            new_usdt=scan_usdt_txs()
+            new_usdt=scan_usdt_txs(TRX_WALLET)
             if new_usdt>0:
                 vlc=new_usdt/price_usdt(p)
-                s[TRON_WALLET]=s.get(TRON_WALLET,0)+vlc
+                s[FUND_WALLET]=s.get(FUND_WALLET,0)+vlc
                 save_state(s)
                 tx={
                     "tx_hash":sha256(f"USDT:{time.time()}"),
-                    "from":"TRON","to":TRON_WALLET,
+                    "from":"TRON","to":FUND_WALLET,
                     "amount":vlc,"type":"buy_usdt",
                     "timestamp":int(time.time())
                 }
@@ -214,8 +218,12 @@ def pool():
 
 @app.route("/balance/<a>")
 def bal(a):
+    # Si es la wallet de TRX, devuelve saldo real
+    if a == TRX_WALLET:
+        trx_balance = get_trx_balance(TRX_WALLET)
+        return jsonify({"address": a, "balance": f"{trx_balance:.6f}"})
+    # Si es cualquier otra wallet, devuelve VLC
     b = load_state().get(a, 0)
-    # Corregido para mostrar balance exacto como en TronLink
     return jsonify({"address": a, "balance": f"{b:.6f}"})
 
 @app.route("/blocks")
