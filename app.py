@@ -97,8 +97,8 @@ def price_trx(p): return p["trx"]/p["velcoin"] if p["velcoin"]>0 else 0
 
 # -----------------------
 # WALLET CONFIG
-TRX_WALLET = "TU_WALLET_TRONLINK_AQUI"  # <- reemplaza con tu wallet real de TRX
-FUND_WALLET = "6d627bb087faa32a00ed18749af72185de31a038"
+TRX_WALLET = "TJXrApg9D7xPSdGKVdCeeCvsmDbiEbDL34"  # Wallet de TronLink para recibir TRX y USDT
+FUND_WALLET = "6d627bb087faa32a00ed18749af72185de31a038"  # Wallet fundadora VLC
 TRONGRID = "https://api.trongrid.io/v1/accounts"
 USDT_CONTRACT = "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7"
 
@@ -111,14 +111,18 @@ def save_processed():
 # -----------------------
 # SALDO TRX REAL
 def get_trx_balance(wallet):
+    """Devuelve el saldo real de TRX de la wallet especificada."""
     try:
         r = requests.get(f"{TRONGRID}/{wallet}")
         data = r.json()
-        balance = int(data["data"][0]["balance"])
-        # Convertir a TRX con 6 decimales exactos, sin notación científica
-        return float(f"{balance/1_000_000:.6f}")
-    except:
-        return 0
+        if "data" in data and len(data["data"]) > 0 and "balance" in data["data"][0]:
+            balance_sun = int(data["data"][0]["balance"])
+            balance_trx = balance_sun / 1_000_000  # Convertir SUN a TRX
+            return float(f"{balance_trx:.6f}")     # 6 decimales exactos
+        return 0.0
+    except Exception as e:
+        logging.error(f"Error get_trx_balance: {e}")
+        return 0.0
 
 def scan_usdt_txs(wallet):
     try:
@@ -218,11 +222,11 @@ def pool():
 
 @app.route("/balance/<a>")
 def bal(a):
-    # Si es la wallet de TRX, devuelve saldo real
+    # Wallet TRX devuelve saldo real
     if a == TRX_WALLET:
         trx_balance = get_trx_balance(TRX_WALLET)
         return jsonify({"address": a, "balance": f"{trx_balance:.6f}"})
-    # Si es cualquier otra wallet, devuelve VLC
+    # Wallet fundadora u otras wallets devuelve VLC
     b = load_state().get(a, 0)
     return jsonify({"address": a, "balance": f"{b:.6f}"})
 
