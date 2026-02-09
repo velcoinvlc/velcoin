@@ -109,9 +109,10 @@ def save_processed():
 
 def get_trx_balance():
     try:
-        r=requests.get(f"{TRONGRID}/{TRON_WALLET}")
-        data=r.json()
-        return int(data["data"][0]["balance"])/1_000_000
+        r = requests.get(f"{TRONGRID}/{TRON_WALLET}")
+        data = r.json()
+        # Usar float directamente y dividir por 1_000_000 para obtener el balance real
+        return float(data["data"][0]["balance"]) / 1_000_000
     except:
         return 0
 
