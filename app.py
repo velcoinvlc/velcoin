@@ -213,7 +213,8 @@ def pool():
 
 @app.route("/balance/<a>")
 def bal(a):
-    return jsonify({"address":a,"balance":load_state().get(a,0)})
+    b = load_state().get(a,0)
+    return jsonify({"address": a, "balance": round(b,6)})
 
 @app.route("/blocks")
 def blocks(): return jsonify(load_blockchain())
