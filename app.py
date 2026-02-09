@@ -175,47 +175,50 @@ def get_usdt_trc20_balance(wallet=TRON_WALLET, contract=USDT_CONTRACT):
         return 0
 
 def check_new_deposits():
-    p = ensure_pool()
-    s = load_state()
+    try:
+        p = ensure_pool()
+        s = load_state()
 
-    # TRX
-    trx_balance = get_trx_balance()
-    if trx_balance > 0:
-        price = price_trx(p)
-        vlc_received = trx_balance / price
-        s[TRON_WALLET] = s.get(TRON_WALLET, 0) + vlc_received
-        add_tx_to_block({
-            "tx_hash": sha256(f"TRX:{TRON_WALLET}:{vlc_received}:{time.time()}"),
-            "from": "TRON",
-            "to": TRON_WALLET,
-            "amount": vlc_received,
-            "type": "buy_trx",
-            "timestamp": int(time.time())
-        })
-        save_state(s)
-        print(f"✅ Depósito TRX detectado: {trx_balance} TRX → {vlc_received} VLC")
+        # TRX
+        trx_balance = get_trx_balance()
+        if trx_balance > 0:
+            price = price_trx(p)
+            vlc_received = trx_balance / price
+            s[TRON_WALLET] = s.get(TRON_WALLET, 0) + vlc_received
+            add_tx_to_block({
+                "tx_hash": sha256(f"TRX:{TRON_WALLET}:{vlc_received}:{time.time()}"),
+                "from": "TRON",
+                "to": TRON_WALLET,
+                "amount": vlc_received,
+                "type": "buy_trx",
+                "timestamp": int(time.time())
+            })
+            save_state(s)
+            print(f"✅ Depósito TRX detectado: {trx_balance} TRX → {vlc_received} VLC")
 
-    # USDT
-    usdt_balance = get_usdt_trc20_balance()
-    if usdt_balance > 0:
-        price = price_usdt(p)
-        vlc_received = usdt_balance / price
-        s[TRON_WALLET] = s.get(TRON_WALLET, 0) + vlc_received
-        add_tx_to_block({
-            "tx_hash": sha256(f"USDT:{TRON_WALLET}:{vlc_received}:{time.time()}"),
-            "from": "TRON",
-            "to": TRON_WALLET,
-            "amount": vlc_received,
-            "type": "buy_usdt",
-            "timestamp": int(time.time())
-        })
-        save_state(s)
-        print(f"✅ Depósito USDT detectado: {usdt_balance} USDT → {vlc_received} VLC")
+        # USDT
+        usdt_balance = get_usdt_trc20_balance()
+        if usdt_balance > 0:
+            price = price_usdt(p)
+            vlc_received = usdt_balance / price
+            s[TRON_WALLET] = s.get(TRON_WALLET, 0) + vlc_received
+            add_tx_to_block({
+                "tx_hash": sha256(f"USDT:{TRON_WALLET}:{vlc_received}:{time.time()}"),
+                "from": "TRON",
+                "to": TRON_WALLET,
+                "amount": vlc_received,
+                "type": "buy_usdt",
+                "timestamp": int(time.time())
+            })
+            save_state(s)
+            print(f"✅ Depósito USDT detectado: {usdt_balance} USDT → {vlc_received} VLC")
 
-    threading.Timer(10, check_new_deposits).start()
+    finally:
+        # Repetir cada 10 segundos
+        threading.Timer(10, check_new_deposits).start()
 
 # -----------------------
-# ENDPOINTS CON TRY/EXCEPT PARA PRODUCCIÓN
+# ENDPOINTS
 @app.route("/status")
 def status():
     try:
@@ -284,8 +287,6 @@ def vol24():
     except Exception as e:
         return jsonify({"error": str(e)})
 
-# -----------------------
-# BASIC
 @app.route("/")
 def home():
     return jsonify({"node":"VelCoin", "network":"velcoin-mainnet"})
