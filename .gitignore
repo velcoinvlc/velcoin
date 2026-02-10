@@ -1,0 +1,7 @@
+wallet.json
+wallet_users.json
+state.json
+pool.json
+processed_txs.json
+__pycache__/
+*.pyc
