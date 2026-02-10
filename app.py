@@ -13,6 +13,7 @@ BLOCKCHAIN_FILE = os.path.join(BASE_DIR, "blockchain.json")
 POOL_FILE = os.path.join(BASE_DIR, "pool.json")
 PROCESSED_FILE = os.path.join(BASE_DIR, "processed_txs.json")
 LOG_FILE = os.path.join(BASE_DIR, "node.log")
+WALLET_FILE = os.path.join(BASE_DIR, "wallet.json")  # Local wallets, nunca en GitHub
 
 # -----------------------
 # LOGGING
@@ -81,7 +82,7 @@ def add_tx_to_block(tx):
 # -----------------------
 # WALLET CONFIG
 TRX_WALLET = "TJXrApg9D7xPSdGKVdCeeCvsmDbiEbDL34"        # Wallet real de TRX/USDT
-FUND_WALLET = "6d627bb087faa32a00ed18749af72185de31a038"  # Wallet fundadora VLC
+FUND_WALLET = None  # Se cargará desde wallet.json
 TRONGRID = "https://api.trongrid.io/v1/accounts"
 USDT_CONTRACT = "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7"
 
@@ -91,6 +92,16 @@ last_usdt_balance = 0
 
 def save_processed():
     save_json(PROCESSED_FILE, list(processed))
+
+# -----------------------
+# CARGAR WALLET FUNDADORA
+def load_fund_wallet():
+    global FUND_WALLET
+    wallets = load_json(WALLET_FILE, [])
+    if wallets:
+        FUND_WALLET = wallets[0]["address"]
+    else:
+        logging.error("No se encontró wallet fundadora. Crear wallet.json local en el servidor.")
 
 # -----------------------
 # POOL REAL
@@ -117,7 +128,8 @@ def ensure_pool():
         }
         save_json(POOL_FILE,p)
         return p
-    except:
+    except Exception as e:
+        logging.error(f"Error al cargar pool: {e}")
         # fallback en caso de error
         return {"trx":0,"usdt":0,"velcoin":0,"history":[]}
 
@@ -127,7 +139,7 @@ def price_trx(p): return p["trx"]/p["velcoin"] if p["velcoin"]>0 else 0
 def get_total_supply():
     s = load_state()
     p = load_json(POOL_FILE, {})
-    return sum(s.values()) + p.get("velcoin", 0)
+    return sum(s.values())
 
 # -----------------------
 # FUNCIONES DE TRON
@@ -304,6 +316,7 @@ def sell():
 
 # -----------------------
 # INIT
+load_fund_wallet()
 create_genesis_block()
 ensure_pool()
 ensure_ledger()
