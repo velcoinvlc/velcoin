@@ -13,7 +13,6 @@ BLOCKCHAIN_FILE = os.path.join(BASE_DIR, "blockchain.json")
 POOL_FILE = os.path.join(BASE_DIR, "pool.json")
 PROCESSED_FILE = os.path.join(BASE_DIR, "processed_txs.json")
 LOG_FILE = os.path.join(BASE_DIR, "node.log")
-WALLET_FILE = os.path.join(BASE_DIR, "wallet.json")  # Local wallets, nunca en GitHub
 
 # -----------------------
 # LOGGING
@@ -80,9 +79,13 @@ def add_tx_to_block(tx):
     save_blockchain(chain)
 
 # -----------------------
-# WALLET CONFIG
-TRX_WALLET = "TJXrApg9D7xPSdGKVdCeeCvsmDbiEbDL34"        # Wallet real de TRX/USDT
-FUND_WALLET = None  # Se cargará desde wallet.json
+# WALLET CONFIG DESDE VARIABLES DE ENTORNO
+TRX_WALLET = os.environ.get("TRX_WALLET_ADDRESS", "TJXrApg9D7xPSdGKVdCeeCvsmDbiEbDL34")  # Wallet de depósito TRX/USDT
+FUND_WALLET = os.environ.get("FUND_WALLET_ADDRESS")  # Wallet fundadora VLC
+FUND_WALLET_PK = os.environ.get("FUND_WALLET_PRIVATE_KEY")  # Opcional, si el nodo necesita firmar
+if not FUND_WALLET:
+    raise Exception("Wallet fundadora no encontrada. Define FUND_WALLET_ADDRESS en las variables de entorno.")
+
 TRONGRID = "https://api.trongrid.io/v1/accounts"
 USDT_CONTRACT = "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7"
 
@@ -94,24 +97,13 @@ def save_processed():
     save_json(PROCESSED_FILE, list(processed))
 
 # -----------------------
-# CARGAR WALLET FUNDADORA
-def load_fund_wallet():
-    global FUND_WALLET
-    wallets = load_json(WALLET_FILE, [])
-    if wallets:
-        FUND_WALLET = wallets[0]["address"]
-        logging.info(f"Wallet fundadora cargada: {FUND_WALLET}")
-    else:
-        logging.error("No se encontró wallet fundadora. Crear wallet.json local en el servidor.")
-        raise RuntimeError("Wallet fundadora no encontrada. Nodo no puede iniciar.")
-
-# -----------------------
 # POOL REAL
 def ensure_pool():
     """
     Pool real: toma saldo actual de wallets TRX y USDT
     y cantidad de VLC en wallet fundadora.
     """
+    p = load_json(POOL_FILE,{})
     try:
         # Saldo real TRX
         trx_balance = get_trx_balance(TRX_WALLET)
@@ -131,6 +123,7 @@ def ensure_pool():
         return p
     except Exception as e:
         logging.error(f"Error al cargar pool: {e}")
+        # fallback en caso de error
         return {"trx":0,"usdt":0,"velcoin":0,"history":[]}
 
 def price_usdt(p): return p["usdt"]/p["velcoin"] if p["velcoin"]>0 else 0
@@ -147,15 +140,14 @@ def get_trx_balance(wallet):
         r = requests.get(f"{TRONGRID}/{wallet}")
         data = r.json()
         balance = int(data["data"][0]["balance"])
-        return float(f"{balance/1_000_000:.6f}")
+        return float(f"{balance/1_000_000:.6f}")  # 6 decimales exactos
     except:
-        logging.error(f"Error al consultar TRX balance: {wallet}")
         return 0
 
 def scan_usdt_txs(wallet):
     try:
         r=requests.get(f"{TRONGRID}/{wallet}/transactions/trc20?limit=50")
-        data=r.json().get("data",[])
+        data=r.json()["data"]
         new=0
         for tx in data:
             if tx["to"]!=wallet: continue
@@ -166,8 +158,7 @@ def scan_usdt_txs(wallet):
             new += int(tx["value"])/1_000_000
         save_processed()
         return new
-    except Exception as e:
-        logging.error(f"Error al escanear USDT txs: {e}")
+    except:
         return 0
 
 # -----------------------
@@ -257,7 +248,8 @@ def status():
 
 @app.route("/pool")
 def pool(): 
-    return jsonify(ensure_pool())
+    p=ensure_pool()
+    return jsonify(p)
 
 @app.route("/balance/<a>")
 def bal(a):
@@ -290,7 +282,6 @@ def buy():
         logging.info(f"BUY: {addr} bought {out} VLC for {usdt} USDT")
         return jsonify({"vlc":out})
     except Exception as e:
-        logging.error(f"Buy error: {e}")
         return jsonify({"error": str(e)}),500
 
 @app.route("/sell",methods=["POST"])
@@ -313,12 +304,10 @@ def sell():
         logging.info(f"SELL: {addr} sold {vlc} VLC for {usdt} USDT")
         return jsonify({"usdt":usdt})
     except Exception as e:
-        logging.error(f"Sell error: {e}")
         return jsonify({"error": str(e)}),500
 
 # -----------------------
 # INIT
-load_fund_wallet()
 create_genesis_block()
 ensure_pool()
 ensure_ledger()
