@@ -1,3 +1,4 @@
+import os print("Wallet fundadora detectada:", os.environ.get("VELCOIN_FUND_WALLET"))
 from flask import Flask, jsonify, request
 import json, os, hashlib, time, threading, logging, random, string
 
