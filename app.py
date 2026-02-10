@@ -60,7 +60,7 @@ def add_tx_to_mempool(tx):
 def load_blockchain(): return load_json(BLOCKCHAIN_FILE, [])
 def save_blockchain(x): save_json(BLOCKCHAIN_FILE, x)
 
-DIFFICULTY = 4  # número de ceros al inicio del hash
+DIFFICULTY = 4  # número de ceros al inicio del hash (PoW)
 
 def create_genesis_block():
     chain = load_blockchain()
@@ -101,10 +101,18 @@ def mine_block(transactions):
 
 # -----------------------
 # WALLET FUNDADORA
-FUND_WALLET = os.environ.get("VELCOIN_FUND_WALLET")  # variable de entorno
-if not FUND_WALLET:
+# La variable de entorno debe contener un JSON completo de la wallet fundadora
+FUND_WALLET_DATA = os.environ.get("VELCOIN_FUND_WALLET")
+if not FUND_WALLET_DATA:
     logging.error("No se encontró wallet fundadora en variable de entorno VELCOIN_FUND_WALLET")
     raise Exception("Wallet fundadora requerida para iniciar nodo.")
+
+try:
+    FUND_WALLET_JSON = json.loads(FUND_WALLET_DATA)
+    FUND_WALLET = FUND_WALLET_JSON["address"]
+except Exception as e:
+    logging.error(f"Error leyendo wallet fundadora desde variable de entorno: {e}")
+    raise Exception("Wallet fundadora inválida")
 
 # -----------------------
 # POOL
