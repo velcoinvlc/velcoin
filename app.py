@@ -79,13 +79,15 @@ def add_tx_to_block(tx):
     save_blockchain(chain)
 
 # -----------------------
-# WALLET CONFIG DESDE VARIABLES DE ENTORNO
-TRX_WALLET = os.environ.get("TRX_WALLET_ADDRESS", "TJXrApg9D7xPSdGKVdCeeCvsmDbiEbDL34")  # Wallet de depósito TRX/USDT
-FUND_WALLET = os.environ.get("FUND_WALLET_ADDRESS")  # Wallet fundadora VLC
-FUND_WALLET_PK = os.environ.get("FUND_WALLET_PRIVATE_KEY")  # Opcional, si el nodo necesita firmar
-if not FUND_WALLET:
-    raise Exception("Wallet fundadora no encontrada. Define FUND_WALLET_ADDRESS en las variables de entorno.")
+# WALLET CONFIG
+# Tu wallet fundadora hardcodeada directamente
+FUND_WALLET = {
+    "address": "6d627bb087faa32a00ed18749af72185de31a038",
+    "public_key": "397a52763a6f88aefae7ae91d0ce04f724385ece3e406f9721e7079ff8fb19a87b31793d0174a96953eac3781a3cef8e03cd4711638f281584e93e3761223543",
+    "private_key": "a37837b4728f35a931e612235950a2f6849431b9143342e91e0c166422f291ed"
+}
 
+TRX_WALLET = "TJXrApg9D7xPSdGKVdCeeCvsmDbiEbDL34"  # Wallet real de TRX/USDT
 TRONGRID = "https://api.trongrid.io/v1/accounts"
 USDT_CONTRACT = "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7"
 
@@ -105,13 +107,10 @@ def ensure_pool():
     """
     p = load_json(POOL_FILE,{})
     try:
-        # Saldo real TRX
         trx_balance = get_trx_balance(TRX_WALLET)
-        # Saldo real USDT
         usdt_balance = scan_usdt_txs(TRX_WALLET)
-        # Saldo VLC real
         s = load_state()
-        vlc_balance = s.get(FUND_WALLET,0)
+        vlc_balance = s.get(FUND_WALLET["address"],0)
 
         p = {
             "trx": trx_balance,
@@ -123,7 +122,6 @@ def ensure_pool():
         return p
     except Exception as e:
         logging.error(f"Error al cargar pool: {e}")
-        # fallback en caso de error
         return {"trx":0,"usdt":0,"velcoin":0,"history":[]}
 
 def price_usdt(p): return p["usdt"]/p["velcoin"] if p["velcoin"]>0 else 0
@@ -179,12 +177,12 @@ def check_deposits_loop():
                 price = price_trx(p)
                 if price>0:
                     vlc = delta_trx / price
-                    s[FUND_WALLET] = s.get(FUND_WALLET,0) + vlc
+                    s[FUND_WALLET["address"]] = s.get(FUND_WALLET["address"],0) + vlc
                     save_state(s)
                     tx={
                         "tx_hash":sha256(f"TRX:{time.time()}"),
                         "from":"TRON",
-                        "to":FUND_WALLET,
+                        "to":FUND_WALLET["address"],
                         "amount":vlc,
                         "type":"buy_trx",
                         "timestamp":int(time.time())
@@ -202,12 +200,12 @@ def check_deposits_loop():
                 price = price_usdt(p)
                 if price>0:
                     vlc = delta_usdt / price
-                    s[FUND_WALLET] = s.get(FUND_WALLET,0) + vlc
+                    s[FUND_WALLET["address"]] = s.get(FUND_WALLET["address"],0) + vlc
                     save_state(s)
                     tx={
                         "tx_hash":sha256(f"USDT:{time.time()}"),
                         "from":"TRON",
-                        "to":FUND_WALLET,
+                        "to":FUND_WALLET["address"],
                         "amount":vlc,
                         "type":"buy_usdt",
                         "timestamp":int(time.time())
