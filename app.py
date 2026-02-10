@@ -100,8 +100,10 @@ def load_fund_wallet():
     wallets = load_json(WALLET_FILE, [])
     if wallets:
         FUND_WALLET = wallets[0]["address"]
+        logging.info(f"Wallet fundadora cargada: {FUND_WALLET}")
     else:
         logging.error("No se encontró wallet fundadora. Crear wallet.json local en el servidor.")
+        raise RuntimeError("Wallet fundadora no encontrada. Nodo no puede iniciar.")
 
 # -----------------------
 # POOL REAL
@@ -110,7 +112,6 @@ def ensure_pool():
     Pool real: toma saldo actual de wallets TRX y USDT
     y cantidad de VLC en wallet fundadora.
     """
-    p = load_json(POOL_FILE,{})
     try:
         # Saldo real TRX
         trx_balance = get_trx_balance(TRX_WALLET)
@@ -130,7 +131,6 @@ def ensure_pool():
         return p
     except Exception as e:
         logging.error(f"Error al cargar pool: {e}")
-        # fallback en caso de error
         return {"trx":0,"usdt":0,"velcoin":0,"history":[]}
 
 def price_usdt(p): return p["usdt"]/p["velcoin"] if p["velcoin"]>0 else 0
@@ -138,7 +138,6 @@ def price_trx(p): return p["trx"]/p["velcoin"] if p["velcoin"]>0 else 0
 
 def get_total_supply():
     s = load_state()
-    p = load_json(POOL_FILE, {})
     return sum(s.values())
 
 # -----------------------
@@ -148,14 +147,15 @@ def get_trx_balance(wallet):
         r = requests.get(f"{TRONGRID}/{wallet}")
         data = r.json()
         balance = int(data["data"][0]["balance"])
-        return float(f"{balance/1_000_000:.6f}")  # 6 decimales exactos
+        return float(f"{balance/1_000_000:.6f}")
     except:
+        logging.error(f"Error al consultar TRX balance: {wallet}")
         return 0
 
 def scan_usdt_txs(wallet):
     try:
         r=requests.get(f"{TRONGRID}/{wallet}/transactions/trc20?limit=50")
-        data=r.json()["data"]
+        data=r.json().get("data",[])
         new=0
         for tx in data:
             if tx["to"]!=wallet: continue
@@ -166,7 +166,8 @@ def scan_usdt_txs(wallet):
             new += int(tx["value"])/1_000_000
         save_processed()
         return new
-    except:
+    except Exception as e:
+        logging.error(f"Error al escanear USDT txs: {e}")
         return 0
 
 # -----------------------
@@ -256,8 +257,7 @@ def status():
 
 @app.route("/pool")
 def pool(): 
-    p=ensure_pool()
-    return jsonify(p)
+    return jsonify(ensure_pool())
 
 @app.route("/balance/<a>")
 def bal(a):
@@ -290,6 +290,7 @@ def buy():
         logging.info(f"BUY: {addr} bought {out} VLC for {usdt} USDT")
         return jsonify({"vlc":out})
     except Exception as e:
+        logging.error(f"Buy error: {e}")
         return jsonify({"error": str(e)}),500
 
 @app.route("/sell",methods=["POST"])
@@ -312,6 +313,7 @@ def sell():
         logging.info(f"SELL: {addr} sold {vlc} VLC for {usdt} USDT")
         return jsonify({"usdt":usdt})
     except Exception as e:
+        logging.error(f"Sell error: {e}")
         return jsonify({"error": str(e)}),500
 
 # -----------------------
