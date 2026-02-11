@@ -1,11 +1,8 @@
 import os
-print("Wallet fundadora detectada:", os.environ.get("VELCOIN_FUND_WALLET"))
-
 from flask import Flask, jsonify, request
 import json, hashlib, time, logging, random, string
 from functools import wraps
 from collections import defaultdict
-from ecdsa import SigningKey, VerifyingKey, SECP256k1, BadSignatureError
 
 app = Flask(__name__)
 
@@ -13,21 +10,21 @@ app = Flask(__name__)
 # PATHS
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE_DIR, "state.json")
+LEDGER_FILE = os.path.join(BASE_DIR, "ledger.json")
 BLOCKCHAIN_FILE = os.path.join(BASE_DIR, "blockchain.json")
 MEMPOOL_FILE = os.path.join(BASE_DIR, "mempool.json")
+POOL_FILE = os.path.join(BASE_DIR, "pool.json")
 NONCE_FILE = os.path.join(BASE_DIR, "nonces.json")
 LOG_FILE = os.path.join(BASE_DIR, "node.log")
 
-MAX_TX_AMOUNT = 1_000_000
-
 # -----------------------
 # LOGGING
-logging.basicConfig(filename=LOG_FILE, level=logging.INFO)
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
 # -----------------------
 # RATE LIMIT
 RATE_LIMIT = defaultdict(list)
-
 def rate_limit(max_calls=20, window=60):
     def decorator(f):
         @wraps(f)
@@ -44,26 +41,21 @@ def rate_limit(max_calls=20, window=60):
 
 # -----------------------
 # CRYPTO
-
 def sha256(msg):
     return hashlib.sha256(msg.encode()).hexdigest()
 
-def derive_address(pub_hex):
-    return sha256(pub_hex)[:40]
+def derive_address(public_key):
+    return sha256(public_key)[:40]
 
-def verify_signature(pub_hex, payload, signature_hex):
-    try:
-        vk = VerifyingKey.from_string(bytes.fromhex(pub_hex), curve=SECP256k1)
-        vk.verify(bytes.fromhex(signature_hex), payload.encode())
-        return True
-    except BadSignatureError:
-        return False
-    except Exception:
-        return False
+def sign_tx(private_key, payload):
+    return sha256(private_key + payload)
+
+def verify_signature(public_key, payload, signature):
+    expected = sha256(sha256(public_key) + payload)
+    return expected == signature
 
 # -----------------------
 # JSON IO
-
 def load_json(path, default):
     if os.path.exists(path):
         try:
@@ -77,121 +69,126 @@ def save_json(path, data):
 
 # -----------------------
 # STATE
-
 def load_state(): return load_json(STATE_FILE, {})
 def save_state(x): save_json(STATE_FILE, x)
 
-def load_mempool(): return load_json(MEMPOOL_FILE, [])
-def save_mempool(x): save_json(MEMPOOL_FILE, x)
-
-def load_chain(): return load_json(BLOCKCHAIN_FILE, [])
-def save_chain(x): save_json(BLOCKCHAIN_FILE, x)
-
+# -----------------------
+# NONCES
 def load_nonces(): return load_json(NONCE_FILE, {})
 def save_nonces(x): save_json(NONCE_FILE, x)
 
 # -----------------------
-# BLOCKCHAIN
+# LEDGER
+def load_ledger(): return load_json(LEDGER_FILE, [])
+def save_ledger(x): save_json(LEDGER_FILE, x)
+def ensure_ledger():
+    if not os.path.exists(LEDGER_FILE): save_ledger([])
+    return load_ledger()
 
+# -----------------------
+# MEMPOOL
+def load_mempool(): return load_json(MEMPOOL_FILE, [])
+def save_mempool(x): save_json(MEMPOOL_FILE, x)
+def add_tx_to_mempool(tx):
+    mempool = load_mempool()
+    mempool.append(tx)
+    save_mempool(mempool)
+
+# -----------------------
+# BLOCKCHAIN
+def load_blockchain(): return load_json(BLOCKCHAIN_FILE, [])
+def save_blockchain(x): save_json(BLOCKCHAIN_FILE, x)
 DIFFICULTY = 4
 
-def create_genesis():
-    chain = load_chain()
-    if chain:
-        return
-    g = {
-        "index":0,
-        "timestamp":int(time.time()),
-        "transactions":[],
-        "previous_hash":"0"*64,
-        "nonce":0
-    }
+def create_genesis_block():
+    chain = load_blockchain()
+    if chain: return
+    g = {"index":0,"timestamp":int(time.time()),"transactions":[],"previous_hash":"0"*64,"nonce":0}
     g["block_hash"]=sha256(json.dumps(g,sort_keys=True))
     chain.append(g)
-    save_chain(chain)
+    save_blockchain(chain)
 
-def pow_block(index, prev_hash, txs):
+def mine_block(transactions):
+    chain = load_blockchain()
+    last = chain[-1]
+    index = last["index"] + 1
+    previous_hash = last["block_hash"]
     nonce = 0
     while True:
-        block = {
-            "index": index,
-            "timestamp": int(time.time()),
-            "transactions": txs,
-            "previous_hash": prev_hash,
-            "nonce": nonce
-        }
-        h = sha256(json.dumps(block, sort_keys=True))
-        if h.startswith("0"*DIFFICULTY):
-            block["block_hash"] = h
+        block = {"index": index, "timestamp": int(time.time()), "transactions": transactions, "previous_hash": previous_hash, "nonce": nonce}
+        block_hash = sha256(json.dumps(block, sort_keys=True))
+        if block_hash.startswith("0"*DIFFICULTY):
+            block["block_hash"] = block_hash
+            chain.append(block)
+            save_blockchain(chain)
+            logging.info(f"Block mined: {block_hash} | txs: {len(transactions)}")
             return block
         nonce += 1
 
 # -----------------------
-# TX VALIDATION
+# WALLET FUNDADORA
+FUND_WALLET_DATA = os.environ.get("VELCOIN_FUND_WALLET")
+if not FUND_WALLET_DATA:
+    logging.error("Wallet fundadora no encontrada en VELCOIN_FUND_WALLET")
+    raise Exception("Wallet fundadora requerida")
+try:
+    FUND_WALLET_JSON = json.loads(FUND_WALLET_DATA)
+    FUND_WALLET = FUND_WALLET_JSON["address"]
+except Exception as e:
+    logging.error(f"Error leyendo wallet fundadora: {e}")
+    raise Exception("Wallet fundadora inválida")
 
-def validate_tx_basic(tx):
+# -----------------------
+# POOL
+def ensure_pool():
+    s = load_state()
+    fund_balance = s.get(FUND_WALLET, 0)
+    p = {"velcoin": fund_balance, "history": []}
+    save_json(POOL_FILE, p)
+    return p
+
+def get_total_supply():
+    s = load_state()
+    return sum(s.values())
+
+# -----------------------
+# WALLET FUNCTIONS
+def generate_wallet():
+    private_key = ''.join(random.choices(string.hexdigits, k=64)).lower()
+    public_key = sha256(private_key)
+    address = derive_address(public_key)
+    return {"private_key": private_key, "public_key": public_key, "address": address}
+
+# -----------------------
+# TX VALIDATION
+def validate_tx(tx):
     required = ["from","to","amount","nonce","public_key","signature"]
     for r in required:
         if r not in tx:
-            return False,"missing "+r
+            return False, f"missing field {r}"
 
-    if float(tx["amount"]) <= 0 or float(tx["amount"]) > MAX_TX_AMOUNT:
-        return False,"amount invalid"
-
-    if derive_address(tx["public_key"]) != tx["from"]:
-        return False,"addr/pub mismatch"
+    sender = tx["from"]
+    pub = tx["public_key"]
+    if derive_address(pub) != sender:
+        return False,"address/pubkey mismatch"
 
     payload = f'{tx["from"]}{tx["to"]}{tx["amount"]}{tx["nonce"]}'
-    if not verify_signature(tx["public_key"], payload, tx["signature"]):
-        return False,"bad sig"
+    if not verify_signature(pub, payload, tx["signature"]):
+        return False,"bad signature"
 
-    return True,"ok"
-
-def validate_tx_state(tx, state, nonces):
-    sender = tx["from"]
-    amt = float(tx["amount"])
-
-    if state.get(sender,0) < amt:
-        return False,"no balance"
-
-    if tx["nonce"] <= nonces.get(sender,0):
+    nonces = load_nonces()
+    last = nonces.get(sender,0)
+    if tx["nonce"] <= last:
         return False,"bad nonce"
 
-    return True,"ok"
-
-# -----------------------
-# APPLY BLOCK STATE
-
-def apply_block(block):
     state = load_state()
-    nonces = load_nonces()
+    if state.get(sender,0) < float(tx["amount"]):
+        return False,"insufficient balance"
 
-    for tx in block["transactions"]:
-        sender = tx["from"]
-        to = tx["to"]
-        amt = float(tx["amount"])
-
-        state[sender] = state.get(sender,0) - amt
-        state[to] = state.get(to,0) + amt
-        nonces[sender] = tx["nonce"]
-
-    save_state(state)
-    save_nonces(nonces)
-
-# -----------------------
-# WALLET GEN
-
-def generate_wallet():
-    sk = SigningKey.generate(curve=SECP256k1)
-    vk = sk.get_verifying_key()
-    priv = sk.to_string().hex()
-    pub = vk.to_string().hex()
-    addr = derive_address(pub)
-    return {"private_key":priv,"public_key":pub,"address":addr}
+    return True,"ok"
 
 # -----------------------
 # API
-
 @app.route("/")
 @rate_limit()
 def index():
@@ -201,17 +198,21 @@ def index():
 @rate_limit()
 def status():
     s=load_state()
-    return jsonify({
-        "status":"online",
-        "holders":len([v for v in s.values() if v>0]),
-        "supply":sum(s.values()),
-        "height": len(load_chain())-1
-    })
+    return jsonify({"status":"online",
+                    "holders":len([v for v in s.values() if v>0]),
+                    "supply":get_total_supply()})
 
-@app.route("/balance/<addr>")
+@app.route("/pool")
 @rate_limit()
-def balance(addr):
-    return jsonify({"balance": load_state().get(addr,0)})
+def pool():
+    p = ensure_pool()
+    return jsonify(p)
+
+@app.route("/balance/<address>")
+@rate_limit()
+def balance(address):
+    s = load_state()
+    return jsonify({"balance": s.get(address,0)})
 
 @app.route("/create_wallet", methods=["POST"])
 @rate_limit()
@@ -222,15 +223,24 @@ def create_wallet_api():
 @rate_limit()
 def send():
     tx = request.json
-
-    ok,msg = validate_tx_basic(tx)
+    ok,msg = validate_tx(tx)
     if not ok:
         return jsonify({"error":msg}),400
 
-    mem = load_mempool()
-    mem.append(tx)
-    save_mempool(mem)
+    s = load_state()
+    sender = tx["from"]
+    to = tx["to"]
+    amount = float(tx["amount"])
 
+    s[sender] -= amount
+    s[to] = s.get(to,0)+amount
+    save_state(s)
+
+    nonces = load_nonces()
+    nonces[sender] = tx["nonce"]
+    save_nonces(nonces)
+
+    add_tx_to_mempool(tx)
     return jsonify({"accepted":True})
 
 @app.route("/mine", methods=["POST"])
@@ -239,52 +249,21 @@ def mine():
     mem = load_mempool()
     if not mem:
         return jsonify({"error":"no tx"}),400
-
-    state = load_state()
-    nonces = load_nonces()
-
-    valid=[]
-    for tx in mem:
-        ok,_ = validate_tx_basic(tx)
-        if not ok: continue
-        ok,_ = validate_tx_state(tx,state,nonces)
-        if not ok: continue
-
-        valid.append(tx)
-        state[tx["from"]] -= float(tx["amount"])
-        state[tx["to"]] = state.get(tx["to"],0)+float(tx["amount"])
-        nonces[tx["from"]] = tx["nonce"]
-
-    if not valid:
-        return jsonify({"error":"no valid tx"}),400
-
-    chain = load_chain()
-    last = chain[-1]
-    block = pow_block(last["index"]+1, last["block_hash"], valid)
-
-    chain.append(block)
-    save_chain(chain)
-    save_state(state)
-    save_nonces(nonces)
+    block = mine_block(mem)
     save_mempool([])
-
     return jsonify(block)
 
 @app.route("/blocks")
 @rate_limit()
 def blocks():
-    return jsonify(load_chain())
-
-@app.route("/confirmations/<int:index>")
-@rate_limit()
-def confirmations(index):
-    h = len(load_chain())-1
-    return jsonify({"confirmations": max(0, h-index)})
+    return jsonify(load_blockchain())
 
 # -----------------------
 # INIT
-
-create_genesis()
+create_genesis_block()
+ensure_ledger()
+ensure_pool()
+save_nonces(load_nonces())
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT",5000))
