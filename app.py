@@ -2,7 +2,9 @@ import os
 print("Wallet fundadora detectada:", os.environ.get("VELCOIN_FUND_WALLET"))
 
 from flask import Flask, jsonify, request
-import json, hashlib, time, threading, logging, random, string
+import json, hashlib, time, logging, random, string
+from functools import wraps
+from collections import defaultdict
 
 app = Flask(__name__)
 
@@ -14,17 +16,50 @@ LEDGER_FILE = os.path.join(BASE_DIR, "ledger.json")
 BLOCKCHAIN_FILE = os.path.join(BASE_DIR, "blockchain.json")
 MEMPOOL_FILE = os.path.join(BASE_DIR, "mempool.json")
 POOL_FILE = os.path.join(BASE_DIR, "pool.json")
+NONCE_FILE = os.path.join(BASE_DIR, "nonces.json")
 LOG_FILE = os.path.join(BASE_DIR, "node.log")
 
 # -----------------------
 # LOGGING
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+format='%(asctime)s - %(levelname)s - %(message)s')
 
 # -----------------------
+# RATE LIMIT
+RATE_LIMIT = defaultdict(list)
+
+def rate_limit(max_calls=20, window=60):
+    def decorator(f):
+        @wraps(f)
+        def wrapped(*args, **kwargs):
+            ip = request.remote_addr
+            now = time.time()
+            RATE_LIMIT[ip] = [t for t in RATE_LIMIT[ip] if now - t < window]
+            if len(RATE_LIMIT[ip]) >= max_calls:
+                return jsonify({"error":"rate limit"}),429
+            RATE_LIMIT[ip].append(now)
+            return f(*args, **kwargs)
+        return wrapped
+    return decorator
+
+# -----------------------
+# CRYPTO
 def sha256(msg):
     return hashlib.sha256(msg.encode()).hexdigest()
 
+def derive_address(public_key):
+    return sha256(public_key)[:40]
+
+def sign_tx(private_key, payload):
+    return sha256(private_key + payload)
+
+def verify_signature(public_key, payload, signature):
+    # esquema simple determinista (demo)
+    expected = sha256(sha256(public_key) + payload)
+    return expected == signature
+
+# -----------------------
+# JSON IO
 def load_json(path, default):
     if os.path.exists(path):
         try:
@@ -42,6 +77,11 @@ def load_state(): return load_json(STATE_FILE, {})
 def save_state(x): save_json(STATE_FILE, x)
 
 # -----------------------
+# NONCES
+def load_nonces(): return load_json(NONCE_FILE, {})
+def save_nonces(x): save_json(NONCE_FILE, x)
+
+# -----------------------
 # LEDGER
 def load_ledger(): return load_json(LEDGER_FILE, [])
 def save_ledger(x): save_json(LEDGER_FILE, x)
@@ -53,17 +93,13 @@ def ensure_ledger():
 # MEMPOOL
 def load_mempool(): return load_json(MEMPOOL_FILE, [])
 def save_mempool(x): save_json(MEMPOOL_FILE, x)
-def add_tx_to_mempool(tx):
-    mempool = load_mempool()
-    mempool.append(tx)
-    save_mempool(mempool)
 
 # -----------------------
 # BLOCKCHAIN
 def load_blockchain(): return load_json(BLOCKCHAIN_FILE, [])
 def save_blockchain(x): save_json(BLOCKCHAIN_FILE, x)
 
-DIFFICULTY = 4  # número de ceros al inicio del hash (PoW)
+DIFFICULTY = 4
 
 def create_genesis_block():
     chain = load_blockchain()
@@ -98,136 +134,128 @@ def mine_block(transactions):
             block["block_hash"] = block_hash
             chain.append(block)
             save_blockchain(chain)
-            logging.info(f"Block mined: {block_hash} | txs: {len(transactions)}")
             return block
         nonce += 1
 
 # -----------------------
-# WALLET FUNDADORA
-# La variable de entorno debe contener un JSON completo de la wallet fundadora
+# WALLET FUNDADORA ENV
 FUND_WALLET_DATA = os.environ.get("VELCOIN_FUND_WALLET")
 if not FUND_WALLET_DATA:
-    logging.error("No se encontró wallet fundadora en variable de entorno VELCOIN_FUND_WALLET")
-    raise Exception("Wallet fundadora requerida para iniciar nodo.")
+    raise Exception("Wallet fundadora requerida")
 
-try:
-    FUND_WALLET_JSON = json.loads(FUND_WALLET_DATA)
-    FUND_WALLET = FUND_WALLET_JSON["address"]
-except Exception as e:
-    logging.error(f"Error leyendo wallet fundadora desde variable de entorno: {e}")
-    raise Exception("Wallet fundadora inválida")
+FUND_WALLET = json.loads(FUND_WALLET_DATA)["address"]
 
 # -----------------------
-# POOL
-def ensure_pool():
-    p = load_json(POOL_FILE, {})
-    s = load_state()
-    vlc_balance = s.get(FUND_WALLET, 0)
-    p = {
-        "velcoin": vlc_balance,
-        "history": [],
-    }
-    save_json(POOL_FILE, p)
-    return p
+# TX VALIDATION CORE
+def validate_tx(tx):
+    required = ["from","to","amount","nonce","public_key","signature"]
+    for r in required:
+        if r not in tx:
+            return False,"missing field "+r
 
-def get_total_supply():
-    s = load_state()
-    return sum(s.values())
+    sender = tx["from"]
+    pub = tx["public_key"]
+    if derive_address(pub) != sender:
+        return False,"address/pubkey mismatch"
+
+    payload = f'{tx["from"]}{tx["to"]}{tx["amount"]}{tx["nonce"]}'
+    if not verify_signature(pub, payload, tx["signature"]):
+        return False,"bad signature"
+
+    nonces = load_nonces()
+    last = nonces.get(sender,0)
+    if tx["nonce"] <= last:
+        return False,"bad nonce"
+
+    state = load_state()
+    if state.get(sender,0) < float(tx["amount"]):
+        return False,"insufficient balance"
+
+    return True,"ok"
 
 # -----------------------
-# WALLET FUNCTIONS
+# WALLET GEN (solo utilidad)
 def generate_wallet():
     private_key = ''.join(random.choices(string.hexdigits, k=64)).lower()
     public_key = sha256(private_key)
-    address = sha256(public_key)[:40]
+    address = derive_address(public_key)
     return {"private_key": private_key, "public_key": public_key, "address": address}
 
 # -----------------------
 # API
 @app.route("/")
+@rate_limit()
 def index():
-    return jsonify({
-        "network":"velcoin-mainnet",
-        "node":"VelCoin",
-        "status":"online",
-        "message":"Nodo VelCoin online. Usa /status, /pool, /balance/<address>, /create_wallet, /send o /mine."
-    })
+    return jsonify({"status":"online","network":"velcoin-mainnet"})
 
 @app.route("/status")
+@rate_limit()
 def status():
-    p=ensure_pool(); s=load_state()
+    s=load_state()
     return jsonify({
-        "network":"velcoin-mainnet",
-        "node":"VelCoin",
         "status":"online",
-        "symbol":"VLC",
-        "total_supply": get_total_supply(),
         "holders":len([v for v in s.values() if v>0]),
+        "supply":sum(s.values())
     })
 
-@app.route("/pool")
-def pool(): 
-    p=ensure_pool()
-    return jsonify(p)
-
 @app.route("/balance/<address>")
+@rate_limit()
 def balance(address):
-    s = load_state()
-    b = s.get(address, 0)
-    return jsonify({"address": address, "balance": f"{b:.6f}"})
+    return jsonify({"balance": load_state().get(address,0)})
 
 @app.route("/create_wallet", methods=["POST"])
-def create_wallet():
-    w = generate_wallet()
-    return jsonify(w)
+@rate_limit()
+def create_wallet_api():
+    return jsonify(generate_wallet())
 
 @app.route("/send", methods=["POST"])
+@rate_limit()
 def send():
-    try:
-        data = request.json
-        sender = data["from"]
-        recipient = data["to"]
-        amount = float(data["amount"])
-        s = load_state()
-        if s.get(sender,0) < amount:
-            return jsonify({"error":"insufficient balance"}),400
-        s[sender] -= amount
-        s[recipient] = s.get(recipient,0) + amount
-        save_state(s)
-        tx = {
-            "tx_hash": sha256(f"{sender}{recipient}{amount}{time.time()}"),
-            "from": sender,
-            "to": recipient,
-            "amount": amount,
-            "timestamp": int(time.time())
-        }
-        add_tx_to_mempool(tx)
-        ensure_ledger().append(tx)
-        logging.info(f"TX: {sender} -> {recipient} : {amount} VLC")
-        return jsonify(tx)
-    except Exception as e:
-        return jsonify({"error": str(e)}),500
+    tx = request.json
+
+    ok,msg = validate_tx(tx)
+    if not ok:
+        return jsonify({"error":msg}),400
+
+    s = load_state()
+    sender = tx["from"]
+    to = tx["to"]
+    amount = float(tx["amount"])
+
+    s[sender] -= amount
+    s[to] = s.get(to,0)+amount
+    save_state(s)
+
+    nonces = load_nonces()
+    nonces[sender] = tx["nonce"]
+    save_nonces(nonces)
+
+    mem = load_mempool()
+    mem.append(tx)
+    save_mempool(mem)
+
+    return jsonify({"accepted":True})
 
 @app.route("/mine", methods=["POST"])
+@rate_limit(5,60)
 def mine():
-    try:
-        mempool = load_mempool()
-        if not mempool:
-            return jsonify({"error":"No transactions to mine"}),400
-        block = mine_block(mempool)
-        save_mempool([])
-        return jsonify(block)
-    except Exception as e:
-        return jsonify({"error": str(e)}),500
+    mem = load_mempool()
+    if not mem:
+        return jsonify({"error":"no tx"}),400
+    block = mine_block(mem)
+    save_mempool([])
+    return jsonify(block)
 
 @app.route("/blocks")
-def blocks(): return jsonify(load_blockchain())
+@rate_limit()
+def blocks():
+    return jsonify(load_blockchain())
 
 # -----------------------
 # INIT
 create_genesis_block()
-ensure_pool()
 ensure_ledger()
+save_nonces(load_nonces())
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT",5000))
