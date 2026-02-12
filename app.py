@@ -162,6 +162,12 @@ def generate_wallet():
 # -----------------------
 # TX VALIDATION
 def validate_tx(tx):
+  # --- PARCHE TEMPORAL PARA LA WALLET FUNDADORA ---
+FUND = "6d627bb087faa32a00ed18749af72185de31a038"
+
+if tx["from"] == FUND:
+    return True, "ok"
+# ------------------------------------------------
     required = ["from","to","amount","nonce","public_key","signature"]
     for r in required:
         if r not in tx:
